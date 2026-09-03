@@ -12,6 +12,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .collection import extract_terms
+from .history import History
 from .render import back_html, verified_reuse, wrap_target
 
 PAGE = """<!doctype html>
@@ -232,8 +233,15 @@ def _handler(deck, profile, model=None):
                 words = extract_terms(deck=deck, profile=profile)
                 from .generate import generate
 
-                result, _usage, used = generate(word, words, n=n, model=model)
+                history = History.load()
+                prefer, avoid = history.plan(words)
+                result, _usage, used = generate(
+                    word, words, n=n, model=model, prefer=prefer, avoid=avoid
+                )
                 known = {w.lower() for w in words}
+                for cand in result.candidates:
+                    history.record(verified_reuse(cand.sentence, cand.reused, known))
+                history.save()
 
                 self._json(
                     200,

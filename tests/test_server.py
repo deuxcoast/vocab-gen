@@ -9,6 +9,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from vocab_gen import server as server_mod
+from vocab_gen.history import History
 
 
 class FakeCandidate:
@@ -26,11 +27,18 @@ class FakeResult:
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        History, "load", classmethod(lambda cls, path=None: History(tmp_path / "u.json"))
+    )
     monkeypatch.setattr(server_mod, "extract_terms", lambda **kw: ["zephyr", "ziggurat"])
     monkeypatch.setattr(
         "vocab_gen.generate.generate",
-        lambda word, words, n=3, model=None: (FakeResult(), None, "test-model"),
+        lambda word, words, n=3, model=None, prefer=None, avoid=None: (
+            FakeResult(),
+            None,
+            "test-model",
+        ),
     )
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server_mod._handler("General", None))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -83,7 +91,11 @@ def test_reuse_not_present_in_sentence_is_not_credited(client, monkeypatch):
 
     monkeypatch.setattr(
         "vocab_gen.generate.generate",
-        lambda word, words, n=3, model=None: (Claimed(), None, "test-model"),
+        lambda word, words, n=3, model=None, prefer=None, avoid=None: (
+            Claimed(),
+            None,
+            "test-model",
+        ),
     )
     _, data = _post(client + "/api/generate", {"word": "nexus", "n": 1})
     assert data["candidates"][0]["reused"] == []

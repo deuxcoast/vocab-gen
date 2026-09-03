@@ -7,7 +7,7 @@ import os
 import anthropic
 from pydantic import BaseModel, Field
 
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-sonnet-5"
 
 # Shorthands, so you can A/B with `--model haiku` instead of the full id.
 MODEL_ALIASES = {
@@ -24,7 +24,9 @@ def resolve_model(name: str | None = None) -> str:
 
 
 class Candidate(BaseModel):
-    sentence: str = Field(description="The example sentence, as plain text with no HTML.")
+    sentence: str = Field(
+        description="The example sentence, as plain text with no HTML."
+    )
     surface_form: str = Field(
         description=(
             "The exact substring of `sentence` that is the target word or phrase, "
@@ -43,7 +45,9 @@ class Generation(BaseModel):
     definition: list[str] = Field(
         description="One or two very short definition bullets for the target word."
     )
-    part_of_speech: str = Field(description="e.g. 'adjective', 'noun', 'transitive verb'.")
+    part_of_speech: str = Field(
+        description="e.g. 'adjective', 'noun', 'transitive verb'."
+    )
     candidates: list[Candidate]
 
 
@@ -112,11 +116,18 @@ def build_system(words: list[str]) -> list[dict]:
 
 
 def generate(
-    word: str, words: list[str], n: int = 3, model: str | None = None
+    word: str,
+    words: list[str],
+    n: int = 3,
+    model: str | None = None,
+    prefer: list[str] | None = None,
+    avoid: list[str] | None = None,
 ) -> tuple[Generation, object, str]:
     """Return the parsed generation, the raw usage object, and the model used."""
     model = resolve_model(model)
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+    if not (
+        os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    ):
         raise SystemExit(
             "No Anthropic credentials found.\n"
             "Set one before generating:  export ANTHROPIC_API_KEY=sk-ant-...\n"
@@ -125,7 +136,7 @@ def generate(
 
     client = anthropic.Anthropic()
     try:
-        response = _call(client, word, words, n, model)
+        response = _call(client, word, words, n, model, prefer, avoid)
     except anthropic.AuthenticationError:
         raise SystemExit(
             "Anthropic rejected the API key (401).\n"
@@ -138,11 +149,17 @@ def generate(
             "Try one of: opus, sonnet, haiku (or a full model id)."
         ) from None
     except anthropic.RateLimitError:
-        raise SystemExit("Rate limited by the Anthropic API. Wait a moment and retry.") from None
+        raise SystemExit(
+            "Rate limited by the Anthropic API. Wait a moment and retry."
+        ) from None
     except anthropic.APIConnectionError:
-        raise SystemExit("Could not reach the Anthropic API. Check your connection.") from None
+        raise SystemExit(
+            "Could not reach the Anthropic API. Check your connection."
+        ) from None
     except anthropic.APIStatusError as exc:
-        raise SystemExit(f"Anthropic API error {exc.status_code}: {exc.message}") from None
+        raise SystemExit(
+            f"Anthropic API error {exc.status_code}: {exc.message}"
+        ) from None
 
     parsed = response.parsed_output
     if parsed is None:
@@ -152,20 +169,50 @@ def generate(
     return parsed, response.usage, model
 
 
-def _call(client, word: str, words: list[str], n: int, model: str):
+def build_user_message(
+    word: str, n: int, prefer: list[str] | None = None, avoid: list[str] | None = None
+) -> str:
+    """The variable half of the prompt.
+
+    Steering lives here rather than in the system prompt on purpose: this text
+    sits after the last cache breakpoint, so it can change on every call without
+    invalidating the cached word list.
+    """
+    parts = [
+        f"Target word or phrase: {word}",
+        "",
+        f"Write {n} candidate sentences for it, following the method above. "
+        "Also give the part of speech and the definition bullets.",
+    ]
+    if avoid:
+        parts += [
+            "",
+            "These known words have come up in recent cards. Skip them unless one is "
+            "the unmistakably right choice: " + ", ".join(avoid) + ".",
+        ]
+    if prefer:
+        parts += [
+            "",
+            "These known words have rarely or never appeared. If any of them fits a "
+            "sentence naturally, favour it — but the rule above still holds: reusing "
+            "nothing beats forcing a word in. " + ", ".join(prefer) + ".",
+        ]
+    return "\n".join(parts)
+
+
+def _call(
+    client,
+    word: str,
+    words: list[str],
+    n: int,
+    model: str,
+    prefer: list[str] | None = None,
+    avoid: list[str] | None = None,
+):
     return client.messages.parse(
         model=model,
         max_tokens=4000,
         system=build_system(words),
         output_format=Generation,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Target word or phrase: {word}\n\n"
-                    f"Write {n} candidate sentences for it, following the method above. "
-                    "Also give the part of speech and the definition bullets."
-                ),
-            }
-        ],
+        messages=[{"role": "user", "content": build_user_message(word, n, prefer, avoid)}],
     )

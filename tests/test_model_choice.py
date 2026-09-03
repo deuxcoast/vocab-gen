@@ -3,9 +3,16 @@ import pytest
 from vocab_gen.generate import DEFAULT_MODEL, resolve_model
 
 
-def test_defaults_to_opus(monkeypatch):
+def test_falls_back_to_the_configured_default(monkeypatch):
+    """Asserts the invariant, not the literal — DEFAULT_MODEL is a tuning knob."""
     monkeypatch.delenv("VOCAB_MODEL", raising=False)
-    assert resolve_model() == DEFAULT_MODEL == "claude-opus-5"
+    assert resolve_model() == DEFAULT_MODEL
+
+
+def test_default_is_a_known_model():
+    from vocab_gen.generate import MODEL_ALIASES
+
+    assert DEFAULT_MODEL in MODEL_ALIASES.values()
 
 
 @pytest.mark.parametrize(

@@ -104,6 +104,34 @@ that reads like two vocabulary words bolted together has failed even if both are
 correctly. Reuse claims are verified server-side — a word is only credited if it is genuinely
 in your deck *and* genuinely present in the sentence — so the "reuses" line never overstates.
 
+## Coverage: making the whole deck resurface
+
+Every generation is an independent API call with no memory of the last one. Left alone, the
+model re-expresses the same preference every time — it reaches for concrete, scene-building
+nouns (`frigate`, `grove`, `isthmus`) because the prompt asks for vivid, specific prose, and
+those are simply easier to write a scene around than abstract words. Measured over 36
+sentences, only 3.2% of the deck was ever touched, and the abstract words that most need
+re-exposure were the ones being skipped.
+
+So the tool keeps a usage count per word in `~/.local/state/vocab-gen/usage.json` and feeds
+two short lists into the *user* message: rarely-used words to favour, and just-used words to
+skip. That message sits after the last cache breakpoint, so steering costs a few dozen tokens
+and leaves the cached word list fully intact.
+
+Measured with `frigate` and nine other words seeded as heavily used: **9 of 12 reuses came
+from the rarely-used pool, 0 from the avoid list, and `frigate` appeared zero times.**
+
+```bash
+vocab --stats          # how much of the deck has actually appeared
+vocab --no-history     # don't steer, don't record
+```
+
+Among equally-unused words the preferred set is *sampled*, not sliced alphabetically —
+otherwise it would just trade one systematic bias for another.
+
+Note that reuse is recorded for every candidate shown, not just the one you keep, since the
+goal is variety in what you *see*.
+
 ## Tests
 
 ```bash

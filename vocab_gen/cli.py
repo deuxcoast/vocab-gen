@@ -7,6 +7,7 @@ import sys
 
 from .collection import extract_terms
 from .env import load_env
+from .history import History
 from .render import back_html, verified_reuse, wrap_target
 
 
@@ -69,6 +70,14 @@ def main(argv: list[str] | None = None) -> int:
         help="model to use: opus, sonnet, haiku, or a full id (env: VOCAB_MODEL)",
     )
     parser.add_argument("--usage", action="store_true", help="report token usage after generating")
+    parser.add_argument(
+        "--stats", action="store_true", help="show which deck words have been used, then exit"
+    )
+    parser.add_argument(
+        "--no-history",
+        action="store_true",
+        help="don't steer toward unused words, and don't record this run",
+    )
     args = parser.parse_args(argv)
 
     load_env()  # a real exported var still wins over .env
@@ -91,6 +100,17 @@ def main(argv: list[str] | None = None) -> int:
             print(w)
         return 0
 
+    if args.stats:
+        cov = History.load().coverage(words)
+        pct = 100 * cov["seen"] / cov["deck"] if cov["deck"] else 0
+        print(f"  {cov['seen']} of {cov['deck']} deck words have appeared ({pct:.1f}%)")
+        print(f"  {cov['unseen']} never used · {cov['uses']} reuses recorded")
+        if cov["top"]:
+            print("\n  most used:")
+            for w, n in cov["top"]:
+                print(f"    {n:3d}  {w}")
+        return 0
+
     if not args.word:
         parser.error("a word is required (or use --list-words / --serve)")
 
@@ -100,7 +120,18 @@ def main(argv: list[str] | None = None) -> int:
 
     from .generate import generate
 
-    result, usage, model = generate(args.word, words, n=args.count, model=args.model)
+    history = None if args.no_history else History.load()
+    prefer, avoid = history.plan(words) if history else ([], [])
+
+    result, usage, model = generate(
+        args.word, words, n=args.count, model=args.model, prefer=prefer, avoid=avoid
+    )
+
+    if history is not None:
+        known = {w.lower() for w in words}
+        for cand in result.candidates:
+            history.record(verified_reuse(cand.sentence, cand.reused, known))
+        history.save()
 
     if args.html:
         _print_html(result)
