@@ -26,20 +26,22 @@ class FakeResult:
     ]
 
 
+def stub_generate(result):
+    """Match generate()'s signature in one place, so it drifts in one place."""
+
+    def _stub(word, words, n=3, model=None, prefer=None, avoid=None, effort=None):
+        return result, None, "test-model", "low"
+
+    return _stub
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setattr(
         History, "load", classmethod(lambda cls, path=None: History(tmp_path / "u.json"))
     )
     monkeypatch.setattr(server_mod, "extract_terms", lambda **kw: ["zephyr", "ziggurat"])
-    monkeypatch.setattr(
-        "vocab_gen.generate.generate",
-        lambda word, words, n=3, model=None, prefer=None, avoid=None: (
-            FakeResult(),
-            None,
-            "test-model",
-        ),
-    )
+    monkeypatch.setattr("vocab_gen.generate.generate", stub_generate(FakeResult()))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server_mod._handler("General", None))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -89,14 +91,7 @@ def test_reuse_not_present_in_sentence_is_not_credited(client, monkeypatch):
     class Claimed(FakeResult):
         candidates = [FakeCandidate("A plain sentence with nexus.", "nexus", ["ziggurat"])]
 
-    monkeypatch.setattr(
-        "vocab_gen.generate.generate",
-        lambda word, words, n=3, model=None, prefer=None, avoid=None: (
-            Claimed(),
-            None,
-            "test-model",
-        ),
-    )
+    monkeypatch.setattr("vocab_gen.generate.generate", stub_generate(Claimed()))
     _, data = _post(client + "/api/generate", {"word": "nexus", "n": 1})
     assert data["candidates"][0]["reused"] == []
     assert data["back_html"] == "<ul><li>A central link.</li><li>The middle of it.</li></ul>"
@@ -114,4 +109,4 @@ def test_unknown_route_404s(client):
 
 def test_response_reports_the_model_used(client):
     _, data = _post(client + "/api/generate", {"word": "nexus", "n": 1})
-    assert data["model"] == "test-model"
+    assert data["model"] == "test-model/low"

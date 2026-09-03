@@ -34,10 +34,22 @@ uv run vocab --model haiku obdurate       # try a cheaper model
 uv run vocab --usage --model sonnet obdurate   # ...and see what it cost
 ```
 
-## Choosing a model
+## Choosing a model and effort level
 
-`--model` takes `opus` (default), `sonnet`, `haiku`, or any full model id. `VOCAB_MODEL` in
-`.env` sets a persistent default; the flag overrides it.
+`--model` takes `opus`, `sonnet`, `haiku`, or any full model id. `--effort` takes `low`
+(default), `medium`, `high`, `xhigh`, `max`. `VOCAB_MODEL` and `VOCAB_EFFORT` in `.env` set
+persistent defaults; the flags override them.
+
+Effort is the bigger lever, because output tokens dominate the bill and most of them are
+invisible thinking. Measured on this prompt with Sonnet 5: **low 265 output tokens, medium
+630, high 1,484** — low is roughly 4x cheaper than high, and the sentences held up.
+
+Effort is dropped automatically for models that reject it (Haiku 4.5, Sonnet 4.5), rather
+than failing the request.
+
+Note that thinking counts against `max_tokens`, so the ceiling scales with effort. A budget
+sized for `low` starves `high`: the model spends it reasoning and returns
+`stop_reason=max_tokens` with no output at all.
 
 At ~2,700 input tokens and ~1,200 output per card:
 

@@ -190,7 +190,7 @@ $('#f').onsubmit = async e => {
 """
 
 
-def _handler(deck, profile, model=None):
+def _handler(deck, profile, model=None, effort=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -235,8 +235,14 @@ def _handler(deck, profile, model=None):
 
                 history = History.load()
                 prefer, avoid = history.plan(words)
-                result, _usage, used = generate(
-                    word, words, n=n, model=model, prefer=prefer, avoid=avoid
+                result, _usage, used, used_effort = generate(
+                    word,
+                    words,
+                    n=n,
+                    model=model,
+                    prefer=prefer,
+                    avoid=avoid,
+                    effort=effort,
                 )
                 known = {w.lower() for w in words}
                 for cand in result.candidates:
@@ -247,7 +253,7 @@ def _handler(deck, profile, model=None):
                     200,
                     {
                         "word": word,
-                        "model": used,
+                        "model": used + (f"/{used_effort}" if used_effort else ""),
                         "part_of_speech": result.part_of_speech,
                         "definition": result.definition,
                         "back_html": back_html(result.definition),
@@ -275,10 +281,11 @@ def serve(
     profile=None,
     open_browser: bool = False,
     model: str | None = None,
+    effort: str | None = None,
 ) -> int:
     # 127.0.0.1, never 0.0.0.0: this is a personal tool with no authentication.
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), _handler(deck, profile, model))
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), _handler(deck, profile, model, effort))
     except OSError as exc:
         print(f"Cannot bind port {port}: {exc}\nTry --port {port + 1}.")
         return 1

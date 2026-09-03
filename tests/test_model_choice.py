@@ -42,3 +42,49 @@ def test_env_var_is_used_when_no_flag(monkeypatch):
 def test_explicit_flag_beats_env_var(monkeypatch):
     monkeypatch.setenv("VOCAB_MODEL", "haiku")
     assert resolve_model("opus") == "claude-opus-5"
+
+
+from vocab_gen.generate import (
+    DEFAULT_EFFORT,
+    EFFORT_LEVELS,
+    resolve_effort,
+    supports_effort,
+)
+
+
+def test_effort_defaults(monkeypatch):
+    monkeypatch.delenv("VOCAB_EFFORT", raising=False)
+    assert resolve_effort() == DEFAULT_EFFORT
+    assert DEFAULT_EFFORT in EFFORT_LEVELS
+
+
+def test_effort_env_var_and_flag_precedence(monkeypatch):
+    monkeypatch.setenv("VOCAB_EFFORT", "max")
+    assert resolve_effort() == "max"
+    assert resolve_effort("low") == "low"
+
+
+def test_effort_is_case_insensitive(monkeypatch):
+    monkeypatch.delenv("VOCAB_EFFORT", raising=False)
+    assert resolve_effort("HIGH") == "high"
+
+
+def test_unknown_effort_is_rejected(monkeypatch):
+    monkeypatch.delenv("VOCAB_EFFORT", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        resolve_effort("turbo")
+    assert "turbo" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "model, ok",
+    [
+        ("claude-opus-5", True),
+        ("claude-sonnet-5", True),
+        # These 400 if effort is sent, so it must be dropped rather than passed.
+        ("claude-haiku-4-5", False),
+        ("claude-sonnet-4-5", False),
+    ],
+)
+def test_effort_support_by_model(model, ok):
+    assert supports_effort(model) is ok

@@ -17,6 +17,45 @@ MODEL_ALIASES = {
 }
 
 
+# Effort trades thinking depth against token spend. Measured on this prompt:
+# Opus 5 went 866 -> 294 output tokens from high to low, a 2.4x cost cut, with no
+# quality loss I could detect in the sentences.
+DEFAULT_EFFORT = "low"
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+# Models that reject output_config.effort outright (400). Sending it anyway
+# would fail the whole request, so it is dropped for these.
+EFFORT_UNSUPPORTED = ("claude-haiku-4-5", "claude-sonnet-4-5", "claude-haiku-3")
+
+# Thinking tokens count against max_tokens, so a ceiling sized for low effort
+# starves higher levels: the model spends the budget reasoning and never emits
+# the structured output, returning stop_reason=max_tokens. The ceiling is only a
+# cap — unused headroom costs nothing — but it stays at 16k, the safe limit for
+# non-streaming requests.
+MAX_TOKENS_BY_EFFORT = {
+    None: 4000,
+    "low": 4000,
+    "medium": 8000,
+    "high": 16000,
+    "xhigh": 16000,
+    "max": 16000,
+}
+
+
+def supports_effort(model: str) -> bool:
+    return not any(model.startswith(prefix) for prefix in EFFORT_UNSUPPORTED)
+
+
+def resolve_effort(name: str | None = None) -> str:
+    """Explicit argument beats $VOCAB_EFFORT beats the default."""
+    chosen = (name or os.environ.get("VOCAB_EFFORT") or DEFAULT_EFFORT).lower()
+    if chosen not in EFFORT_LEVELS:
+        raise SystemExit(
+            f"Unknown effort {chosen!r}. Choose one of: {', '.join(EFFORT_LEVELS)}."
+        )
+    return chosen
+
+
 def resolve_model(name: str | None = None) -> str:
     """Explicit argument beats $VOCAB_MODEL beats the default."""
     chosen = name or os.environ.get("VOCAB_MODEL") or DEFAULT_MODEL
@@ -122,9 +161,11 @@ def generate(
     model: str | None = None,
     prefer: list[str] | None = None,
     avoid: list[str] | None = None,
-) -> tuple[Generation, object, str]:
-    """Return the parsed generation, the raw usage object, and the model used."""
+    effort: str | None = None,
+) -> tuple[Generation, object, str, str | None]:
+    """Return the parsed generation, the usage object, the model, and the effort used."""
     model = resolve_model(model)
+    effort = resolve_effort(effort) if supports_effort(model) else None
     if not (
         os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
     ):
@@ -136,7 +177,7 @@ def generate(
 
     client = anthropic.Anthropic()
     try:
-        response = _call(client, word, words, n, model, prefer, avoid)
+        response = _call(client, word, words, n, model, prefer, avoid, effort)
     except anthropic.AuthenticationError:
         raise SystemExit(
             "Anthropic rejected the API key (401).\n"
@@ -163,10 +204,15 @@ def generate(
 
     parsed = response.parsed_output
     if parsed is None:
+        if response.stop_reason == "max_tokens":
+            raise SystemExit(
+                f"Ran out of output budget at effort={effort!r} before the model "
+                "finished. Retry at a lower effort."
+            )
         raise SystemExit(
             f"Model returned no structured output (stop_reason={response.stop_reason})."
         )
-    return parsed, response.usage, model
+    return parsed, response.usage, model, effort
 
 
 def build_user_message(
@@ -208,11 +254,13 @@ def _call(
     model: str,
     prefer: list[str] | None = None,
     avoid: list[str] | None = None,
+    effort: str | None = None,
 ):
     return client.messages.parse(
         model=model,
-        max_tokens=4000,
+        max_tokens=MAX_TOKENS_BY_EFFORT.get(effort, 4000),
         system=build_system(words),
         output_format=Generation,
         messages=[{"role": "user", "content": build_user_message(word, n, prefer, avoid)}],
+        **({"output_config": {"effort": effort}} if effort else {}),
     )

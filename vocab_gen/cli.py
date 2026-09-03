@@ -17,12 +17,13 @@ def _style(enabled: bool):
     return lambda text, code: f"\033[{code}m{text}\033[0m"
 
 
-def _print_result(word, result, words, model: str, color: bool) -> None:
+def _print_result(word, result, words, model: str, effort, color: bool) -> None:
     s = _style(color)
     known = {w.lower() for w in words}
 
     print()
-    print(s(f"  {word}", "1;36"), s(f" · {result.part_of_speech} · {model}", "2"))
+    tag = f"{model}/{effort}" if effort else model
+    print(s(f"  {word}", "1;36"), s(f" · {result.part_of_speech} · {tag}", "2"))
     print()
 
     for i, cand in enumerate(result.candidates, 1):
@@ -69,6 +70,13 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="model to use: opus, sonnet, haiku, or a full id (env: VOCAB_MODEL)",
     )
+    parser.add_argument(
+        "--effort",
+        default=None,
+        choices=["low", "medium", "high", "xhigh", "max"],
+        help="thinking depth; lower is cheaper (default: low, env: VOCAB_EFFORT). "
+        "Ignored by models that don't support it.",
+    )
     parser.add_argument("--usage", action="store_true", help="report token usage after generating")
     parser.add_argument(
         "--stats", action="store_true", help="show which deck words have been used, then exit"
@@ -91,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             profile=args.profile,
             open_browser=args.open,
             model=args.model,
+            effort=args.effort,
         )
 
     words = extract_terms(deck=args.deck, profile=args.profile)
@@ -123,8 +132,14 @@ def main(argv: list[str] | None = None) -> int:
     history = None if args.no_history else History.load()
     prefer, avoid = history.plan(words) if history else ([], [])
 
-    result, usage, model = generate(
-        args.word, words, n=args.count, model=args.model, prefer=prefer, avoid=avoid
+    result, usage, model, effort = generate(
+        args.word,
+        words,
+        n=args.count,
+        model=args.model,
+        prefer=prefer,
+        avoid=avoid,
+        effort=args.effort,
     )
 
     if history is not None:
@@ -136,11 +151,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.html:
         _print_html(result)
     else:
-        _print_result(args.word, result, words, model, color=sys.stdout.isatty())
+        _print_result(
+            args.word, result, words, model, effort, color=sys.stdout.isatty()
+        )
 
     if args.usage:
         print(
-            f"  {model}: {usage.input_tokens} in / {usage.output_tokens} out"
+            f"  {model}{'/' + effort if effort else ''}: "
+            f"{usage.input_tokens} in / {usage.output_tokens} out"
             f" · cache write {usage.cache_creation_input_tokens}"
             f" · cache read {usage.cache_read_input_tokens}",
             file=sys.stderr,
