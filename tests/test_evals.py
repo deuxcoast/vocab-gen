@@ -427,3 +427,19 @@ def test_render_paired_reports_each_variant():
         rows.append(prow("terse", f"w{i}", 4.0))
     out = report.render_paired(rows)
     assert "terse" in out and "judge" in out
+
+
+def test_the_original_twenty_remain_a_prefix():
+    """Appending keeps subset(20) reproducing the set earlier runs used."""
+    first = [c.word for c in subset(20)]
+    assert first[0] == "hidebound" and first[-1] == "tour de force"
+    assert len(GOLDEN) == 40
+
+
+def test_the_enlarged_set_is_better_balanced():
+    import collections
+
+    reg = collections.Counter(c.register for c in GOLDEN)
+    assert reg["concrete"] >= 15, reg
+    pos = collections.Counter(c.pos for c in GOLDEN)
+    assert min(pos.values()) >= 2, pos
