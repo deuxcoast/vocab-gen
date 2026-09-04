@@ -24,6 +24,7 @@ from ..collection import extract_vocab
 from ..generate import generate, resolve_model
 from ..history import History
 from ..providers import cost_of
+from ..prompts import get as get_variant
 from .cases import Case, subset
 from .graders import grade_candidate
 from .judge import DEFAULT_JUDGE, judge_case, overall
@@ -35,6 +36,7 @@ RUNS_DIR = Path("evals/runs")
 class Row:
     run_id: str
     model: str
+    variant: str
     word: str
     pos: str
     register: str
@@ -67,6 +69,7 @@ class Row:
 
 def run(
     models: list[str],
+    variants: list[str] | None = None,
     n_cases: int | None = None,
     n_candidates: int = 3,
     seed: int = 20260904,
@@ -87,39 +90,45 @@ def run(
 
     for model in models:
         spec = resolve_model(model)
-        for case in cases:
-            started = time.perf_counter()
-            try:
-                outcome = generate(
-                    case.word, words, n=n_candidates, model=spec,
-                    prefer=prefer, avoid=avoid, kept=[], allow_fallback=False,
-                )
-                result, usage, used = outcome.result, outcome.usage, outcome.model
-            except Exception as exc:
-                on_event("error", spec, case.word, str(exc).splitlines()[0])
-                rows.append(_error_row(run_id, spec, case, str(exc).splitlines()[0]))
-                continue
-            latency = time.perf_counter() - started
-            cost = cost_of(used, usage)
-
-            for i, cand in enumerate(result.candidates):
-                g = grade_candidate(cand, case.word, result.definition, words)
-                rows.append(
-                    Row(
-                        run_id=run_id, model=used, word=case.word, pos=case.pos,
-                        register=case.register, index=i,
-                        latency=latency, input_tokens=usage.input_tokens,
-                        output_tokens=usage.output_tokens,
-                        cache_read=usage.cache_read_input_tokens,
-                        # generation cost, split across its candidates
-                        cost=(cost / len(result.candidates)) if cost is not None else None,
-                        **{k: g[k] for k in (
-                            "sentence", "words", "has_target", "claimed", "verified",
-                            "reused", "no_invented_reuse", "invented", "gives_away",
-                            "giveaway_words", "usable")},
+        for variant_name in (variants or ["baseline"]):
+            variant = get_variant(variant_name)
+            for case in cases:
+                started = time.perf_counter()
+                try:
+                    outcome = generate(
+                        case.word, words, n=n_candidates, model=spec,
+                        prefer=prefer, avoid=avoid, kept=[], allow_fallback=False,
+                        variant=variant,
                     )
-                )
-            on_event("done", spec, case.word, f"{latency:.1f}s")
+                    result, usage, used = outcome.result, outcome.usage, outcome.model
+                except Exception as exc:
+                    on_event("error", spec, case.word, str(exc).splitlines()[0])
+                    rows.append(
+                        _error_row(run_id, spec, variant_name, case, str(exc).splitlines()[0])
+                    )
+                    continue
+                latency = time.perf_counter() - started
+                cost = cost_of(used, usage)
+
+                for i, cand in enumerate(result.candidates):
+                    g = grade_candidate(cand, case.word, result.definition, words)
+                    rows.append(
+                        Row(
+                            run_id=run_id, model=used, variant=variant_name,
+                            word=case.word, pos=case.pos,
+                            register=case.register, index=i,
+                            latency=latency, input_tokens=usage.input_tokens,
+                            output_tokens=usage.output_tokens,
+                            cache_read=usage.cache_read_input_tokens,
+                            # generation cost, split across its candidates
+                            cost=(cost / len(result.candidates)) if cost is not None else None,
+                            **{k: g[k] for k in (
+                                "sentence", "words", "has_target", "claimed", "verified",
+                                "reused", "no_invented_reuse", "invented", "gives_away",
+                                "giveaway_words", "usable")},
+                        )
+                    )
+                on_event("done", spec, case.word, f"{latency:.1f}s")
 
     if judge_model:
         _judge_all(rows, judge_model, seed, on_event)
@@ -137,7 +146,8 @@ def _judge_all(rows: list[Row], judge_model: str, seed: int, on_event) -> None:
     for word, group in by_word.items():
         # Pooled across models and shuffled, so the judge cannot tell them apart.
         candidates = [
-            {"id": f"{r.model}#{r.word}#{r.index}", "sentence": r.sentence} for r in group
+            {"id": f"{r.model}#{r.variant}#{r.word}#{r.index}", "sentence": r.sentence}
+            for r in group
         ]
         try:
             verdicts = judge_case(word, candidates, judge_model, random.Random(seed))
@@ -145,7 +155,7 @@ def _judge_all(rows: list[Row], judge_model: str, seed: int, on_event) -> None:
             on_event("error", judge_model, word, f"judge failed: {exc}")
             continue
         for row in group:
-            v = verdicts.get(f"{row.model}#{row.word}#{row.index}")
+            v = verdicts.get(f"{row.model}#{row.variant}#{row.word}#{row.index}")
             if v is None:
                 continue
             row.naturalness = v.naturalness
@@ -157,9 +167,9 @@ def _judge_all(rows: list[Row], judge_model: str, seed: int, on_event) -> None:
         on_event("judged", judge_model, word, f"{len(verdicts)} scored")
 
 
-def _error_row(run_id: str, model: str, case: Case, error: str) -> Row:
+def _error_row(run_id: str, model: str, variant: str, case: Case, error: str) -> Row:
     return Row(
-        run_id=run_id, model=model, word=case.word, pos=case.pos,
+        run_id=run_id, model=model, variant=variant, word=case.word, pos=case.pos,
         register=case.register, index=0, sentence="", words=0, has_target=False,
         claimed=0, verified=0, reused=[], no_invented_reuse=True, invented=[],
         gives_away=False, giveaway_words=[], usable=False, latency=0.0,

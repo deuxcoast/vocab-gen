@@ -237,6 +237,40 @@ otherwise it would just trade one systematic bias for another.
 Note that reuse is recorded for every candidate shown, not just the one you keep, since the
 goal is variety in what you *see*.
 
+## Evaluating prompts
+
+The prompt is a bigger lever than the model — four models across three vendors landed within
+noise of each other, which suggests the ceiling is set by the instructions, not the weights.
+
+```bash
+uv run python scripts/eval.py --list-variants
+uv run python scripts/eval.py dashscope --variants baseline permissive-reuse terse
+```
+
+Variants live in `prompts.py` and are **composed from shared blocks**, not rewritten. An
+ablation differs from the baseline in exactly the thing it claims to test; hand-rewriting a
+whole prompt per variant is how a result gets attributed to the rule you changed on purpose
+rather than the three words you changed by accident.
+
+Every variant carries a stated **hypothesis**. If you cannot say in advance what it should do
+to which metric, you are not running an experiment — and with enough variants, something
+always wins by chance.
+
+Comparisons are **paired**: every arm sees the same golden words, so the per-word difference
+is averaged rather than each arm being averaged and subtracted. Word difficulty is the largest
+source of variance — some targets are simply easier to write around — and pairing cancels it,
+which is what lets 20 words resolve a difference at all.
+
+```
+  variant            metric            diff   95% ci     w/l  verdict
+  terse              judge           -0.800    0.272   0/3    REAL
+  terse              naturalness     -1.222    0.218   0/3    REAL
+  terse              reuses/sent     +0.444    0.576   2/0    noise
+```
+
+"noise" means the interval spans zero — not that the arms are equal, only that this many words
+cannot tell them apart.
+
 ## Eval harness
 
 The spike answers "can this model do the job at all". The harness answers "which one is

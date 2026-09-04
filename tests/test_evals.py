@@ -282,3 +282,148 @@ def test_a_failing_model_does_not_abort_the_run(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
     _id, rows = runner.run(["bad", "anthropic:a"], n_cases=1, judge_model=None)
     assert any(r.error for r in rows) and any(not r.error for r in rows)
+
+
+# --- prompt variants ---------------------------------------------------------
+
+
+def test_each_variant_actually_reaches_the_model(monkeypatch, tmp_path):
+    """The bug this guards: threading the variant is easy to drop, and every
+    variant then silently runs the baseline prompt."""
+    seen = []
+
+    def fake_generate(word, words, n=3, model=None, variant=None, **kw):
+        seen.append(getattr(variant, "name", variant))
+        return _fake_outcome(model)
+
+    monkeypatch.setattr(runner, "generate", fake_generate)
+    monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
+    runner.run(["m"], variants=["baseline", "terse"], n_cases=2, judge_model=None)
+    assert set(seen) == {"baseline", "terse"}
+    assert len(seen) == 4  # 2 variants x 2 cases
+
+
+def test_rows_record_which_variant_produced_them(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "generate", lambda *a, **kw: _fake_outcome("m"))
+    monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
+    _id, rows = runner.run(["m"], variants=["baseline", "terse"], n_cases=1, judge_model=None)
+    assert {r.variant for r in rows} == {"baseline", "terse"}
+
+
+def test_variants_default_to_baseline_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "generate", lambda *a, **kw: _fake_outcome("m"))
+    monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
+    _id, rows = runner.run(["m"], n_cases=1, judge_model=None)
+    assert {r.variant for r in rows} == {"baseline"}
+
+
+def _fake_outcome(model):
+    from vocab_gen.generate import Outcome
+
+    return Outcome(
+        types.SimpleNamespace(
+            definition=["d"], candidates=[cand("The obdurate judge spoke.", "obdurate")]
+        ),
+        types.SimpleNamespace(
+            input_tokens=1, output_tokens=1,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        ),
+        model,
+        "low",
+    )
+
+
+# --- paired comparison -------------------------------------------------------
+
+
+def prow(variant, word, judge, **kw):
+    base = dict(
+        model="m", variant=variant, word=word, register="abstract", index=0,
+        sentence="s", words=10, has_target=True, claimed=1, verified=1,
+        reused=["x"], no_invented_reuse=True, invented=[], gives_away=False,
+        giveaway_words=[], usable=True, latency=1.0, input_tokens=1,
+        output_tokens=1, cache_read=0, cost=0.01, error="", naturalness=4,
+        sense_fit=4, recall_value=4, reuse_fit=4, judge_note="",
+        judge_overall=judge,
+    )
+    base.update(kw)
+    return base
+
+
+def test_paired_measures_the_per_word_difference():
+    rows = [prow("a", "w1", 4.0), prow("b", "w1", 3.0),
+            prow("a", "w2", 5.0), prow("b", "w2", 4.0)]
+    res = report.paired(rows, "a", "b")
+    assert res["mean_diff"] == pytest.approx(1.0)
+    assert res["n_words"] == 2 and res["a_wins"] == 2
+
+
+def test_pairing_is_more_sensitive_than_comparing_averages():
+    """The reason this is paired: word difficulty dwarfs the effect being measured."""
+    import statistics
+
+    # Words differ hugely in difficulty; the variant is consistently +0.3 better.
+    difficulty = [1.0, 5.0, 2.0, 4.5, 1.5, 4.0, 2.5, 3.5]
+    rows = []
+    for i, d in enumerate(difficulty):
+        rows.append(prow("a", f"w{i}", d + 0.3))
+        rows.append(prow("b", f"w{i}", d))
+
+    res = report.paired(rows, "a", "b")
+    assert res["significant"] is True, "pairing should resolve a consistent effect"
+
+    # Unpaired, the same data is swamped by how much the words differ.
+    a = [r["judge_overall"] for r in rows if r["variant"] == "a"]
+    b = [r["judge_overall"] for r in rows if r["variant"] == "b"]
+    pooled_se = (statistics.stdev(a) ** 2 / len(a) + statistics.stdev(b) ** 2 / len(b)) ** 0.5
+    unpaired_t = (statistics.mean(a) - statistics.mean(b)) / pooled_se
+    assert abs(unpaired_t) < 1.96, "unpaired should fail to resolve it"
+
+
+def test_paired_calls_a_wash_a_wash():
+    rows = []
+    for i, (x, y) in enumerate([(4.0, 4.1), (3.5, 3.4), (4.2, 4.2), (3.8, 3.9)]):
+        rows.append(prow("a", f"w{i}", x))
+        rows.append(prow("b", f"w{i}", y))
+    assert report.paired(rows, "a", "b")["significant"] is False
+
+
+def test_paired_needs_words_present_in_both_arms():
+    rows = [prow("a", "w1", 4.0), prow("b", "w2", 3.0)]
+    assert report.paired(rows, "a", "b") is None
+
+
+def test_paired_ignores_errored_rows():
+    rows = [prow("a", "w1", 4.0), prow("b", "w1", 3.0),
+            prow("a", "w2", 4.5), prow("b", "w2", 3.5),
+            prow("a", "w3", 9.0, error="boom"), prow("b", "w3", 3.0)]
+    res = report.paired(rows, "a", "b")
+    assert res["n_words"] == 2  # w3 dropped because one arm failed
+    assert res["mean_diff"] == pytest.approx(1.0)  # the 9.0 never counted
+
+
+def test_paired_needs_at_least_two_shared_words():
+    """One word gives no variance, so no interval can be computed."""
+    rows = [prow("a", "w1", 4.0), prow("b", "w1", 3.0)]
+    assert report.paired(rows, "a", "b") is None
+
+
+def test_paired_can_compare_any_metric():
+    rows = [prow("a", "w1", 4.0, verified=2), prow("b", "w1", 4.0, verified=0),
+            prow("a", "w2", 4.0, verified=3), prow("b", "w2", 4.0, verified=1)]
+    res = report.paired(rows, "a", "b", metric="verified")
+    assert res["mean_diff"] == pytest.approx(2.0)
+
+
+def test_arm_label_keeps_baseline_clean():
+    assert report.arm_of(prow("baseline", "w", 4.0)) == "m"
+    assert report.arm_of(prow("terse", "w", 4.0)) == "m · terse"
+
+
+def test_render_paired_reports_each_variant():
+    rows = []
+    for i in range(4):
+        rows.append(prow("baseline", f"w{i}", 3.5))
+        rows.append(prow("terse", f"w{i}", 4.0))
+    out = report.render_paired(rows)
+    assert "terse" in out and "judge" in out

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections import defaultdict
 
@@ -21,10 +22,16 @@ def accepted(row: dict) -> bool:
     return score is None or score >= ACCEPT_THRESHOLD
 
 
+def arm_of(row: dict) -> str:
+    """One experimental arm: a model paired with a prompt variant."""
+    variant = row.get("variant", "baseline")
+    return row["model"] if variant == "baseline" else f"{row['model']} · {variant}"
+
+
 def by_model(rows: list[dict]) -> dict[str, dict]:
     groups: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
-        groups[row["model"]].append(row)
+        groups[arm_of(row)].append(row)
 
     out = {}
     for model, group in groups.items():
@@ -148,3 +155,88 @@ def examples(rows: list[dict], n: int = 3) -> str:
         out.append(f"      {r['sentence']}")
         out.append(f"      judge: {r['judge_note']}")
     return "\n".join(out)
+
+
+# --- paired comparison -------------------------------------------------------
+
+
+def paired(
+    rows: list[dict], a: str, b: str, metric: str = "judge_overall", key: str = "variant"
+) -> dict | None:
+    """Compare two arms on the same target words.
+
+    Every arm sees the same golden set, so the comparison should be *paired*:
+    take the per-word difference and average those, rather than averaging each
+    arm and subtracting. Word difficulty is by far the largest source of
+    variance here — some targets are simply easier to write around — and pairing
+    cancels it out, which is what makes a 20-word set able to resolve a
+    difference at all.
+    """
+    def per_word(arm: str) -> dict[str, float]:
+        buckets: dict[str, list[float]] = defaultdict(list)
+        for row in rows:
+            if row.get(key) == arm and not row["error"] and row.get(metric) is not None:
+                buckets[row["word"]].append(row[metric])
+        return {word: statistics.mean(vals) for word, vals in buckets.items()}
+
+    left, right = per_word(a), per_word(b)
+    shared = sorted(set(left) & set(right))
+    if len(shared) < 2:
+        return None
+
+    diffs = [left[w] - right[w] for w in shared]
+    mean = statistics.mean(diffs)
+    sd = statistics.stdev(diffs)
+    se = sd / math.sqrt(len(diffs)) if sd else 0.0
+    return {
+        "a": a,
+        "b": b,
+        "metric": metric,
+        "n_words": len(shared),
+        "mean_diff": mean,
+        "ci95": 1.96 * se,
+        "t": (mean / se) if se else 0.0,
+        "significant": bool(se) and abs(mean / se) > 1.96,
+        "a_wins": sum(d > 0 for d in diffs),
+        "b_wins": sum(d < 0 for d in diffs),
+        "ties": sum(d == 0 for d in diffs),
+        "biggest_gain": max(zip(diffs, shared)) if diffs else None,
+        "biggest_loss": min(zip(diffs, shared)) if diffs else None,
+    }
+
+
+def render_paired(rows: list[dict], baseline: str = "baseline") -> str:
+    """Every variant against the baseline, on the metrics that matter."""
+    arms = sorted({r.get("variant", "baseline") for r in rows if not r["error"]})
+    others = [a for a in arms if a != baseline]
+    if not others:
+        return ""
+
+    lines = ["", f"paired against '{baseline}', per word (positive favours the variant)"]
+    head = f"  {'variant':18s} {'metric':14s} {'diff':>7s} {'95% ci':>8s} {'w/l':>7s}  verdict"
+    lines.append(head)
+    lines.append("  " + "-" * (len(head) - 2))
+    for arm in others:
+        for metric, label in (
+            ("judge_overall", "judge"),
+            ("naturalness", "naturalness"),
+            ("verified", "reuses/sent"),
+            ("gives_away", "giveaway"),
+        ):
+            res = paired(rows, arm, baseline, metric=metric)
+            if res is None:
+                continue
+            verdict = "REAL" if res["significant"] else "noise"
+            lines.append(
+                f"  {arm:18s} {label:14s} {res['mean_diff']:+7.3f} "
+                f"{res['ci95']:8.3f} {res['a_wins']:3d}/{res['b_wins']:<3d}  {verdict}"
+            )
+    lines.append("")
+    lines.append(
+        "  diff = mean per-word difference · w/l = words where the variant won/lost"
+    )
+    lines.append(
+        "  'noise' means the confidence interval spans zero — not that the variant is "
+        "equal, only that this many words cannot tell them apart"
+    )
+    return "\n".join(lines)
