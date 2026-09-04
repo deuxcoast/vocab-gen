@@ -85,7 +85,30 @@ Kimi K3 ranks second behind Claude Opus 5, ahead of GPT-5.6 — but it costs *mo
 than Claude Sonnet 5. The cheap Chinese tier is 13-26x cheaper and, for this task, entirely
 unmeasured. That gap is what the harness is for.
 
+## Seeing failures
+
+This is a single-user tool, so failures are shown in full rather than hidden behind a generic
+message. Every failure is classified — `auth`, `balance`, `rate_limit`, `not_found`,
+`connection`, `setup` — and reported with the provider, the model, and the exact environment
+variable to check.
+
+```bash
+vocab --check     # probe every configured provider and report its status
+```
+
+The CLI prints failures to stderr in red; the web UI shows a red panel with the full message,
+newlines intact.
+
+If the default model cannot answer, the fallback runs — but never silently. A fallback prints
+a warning naming what failed and what was used instead. If both fail, the message names both,
+in order, so it points at the provider that actually broke first.
+
 ## Choosing a model and effort level
+
+The default is **`dashscope:qwen3.8-flash`** with **`moonshot:kimi-k2.6`** as fallback. Over
+234 judged candidates these were statistically indistinguishable from Claude Sonnet 5, at
+$0.011 and $0.151 per 100 accepted cards against Sonnet's $0.293. An explicit `--model`
+disables the fallback: choosing a model is an instruction, not a hint.
 
 `--model` takes `opus`, `sonnet`, `haiku`, or any full model id. `--effort` takes `low`
 (default), `medium`, `high`, `xhigh`, `max`. `VOCAB_MODEL` and `VOCAB_EFFORT` in `.env` set
@@ -213,6 +236,42 @@ otherwise it would just trade one systematic bias for another.
 
 Note that reuse is recorded for every candidate shown, not just the one you keep, since the
 goal is variety in what you *see*.
+
+## Eval harness
+
+The spike answers "can this model do the job at all". The harness answers "which one is
+better", which cannot be done by reading a few sentences — a prompt change earlier in this
+project moved the reuse rate from 72% to 37% and eyeballing three sentences could not tell
+whether that was an improvement.
+
+```bash
+uv run python scripts/eval.py                          # every ready provider
+uv run python scripts/eval.py anthropic dashscope      # specific ones
+uv run python scripts/eval.py --cases 5 --no-judge     # cheap smoke run
+uv run python scripts/eval.py --report <run_id>        # re-render a stored run
+```
+
+Twenty target words, none of them in the deck, spread across part of speech and the
+concrete/abstract axis — the axis where the model's word-selection bias showed up.
+
+Most metrics are programmatic and reuse the app's own checks, so a grader can never disagree
+with what the tool actually does to a card: does the sentence contain the target word, does it
+invent deck words, does it leak the definition. The part no regex can score — *does this read
+as written prose or as a vocabulary exercise* — goes to an LLM judge.
+
+The judge is **blind and comparative**: candidates for one word are pooled across models,
+shuffled, and labelled A/B/C, then scored side by side in one call. It never learns which
+model wrote what. Naturalness is weighted double in the overall score.
+
+**A caveat that cannot be engineered away:** judging Claude output with a Claude judge risks
+self-preference. `--judge` is configurable for that reason; run it with judges from two
+families before trusting a close result.
+
+The headline number is **dollars per accepted card**, not per call. A model that is cheap per
+request but needs more attempts before one is usable is not actually cheap.
+
+Runs are stored as JSONL under `evals/runs/` so they can be re-analysed and compared without
+paying to regenerate them.
 
 ## Tests
 

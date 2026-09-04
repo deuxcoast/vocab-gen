@@ -9,10 +9,20 @@ def test_falls_back_to_the_configured_default(monkeypatch):
     assert resolve_model() == DEFAULT_MODEL
 
 
-def test_default_is_a_known_model():
-    from vocab_gen.generate import MODEL_ALIASES
+def test_default_and_fallback_name_real_providers():
+    from vocab_gen.generate import FALLBACK_MODEL, split_spec
+    from vocab_gen.providers import PROVIDERS
 
-    assert DEFAULT_MODEL in MODEL_ALIASES.values()
+    for spec in (DEFAULT_MODEL, FALLBACK_MODEL):
+        provider, model = split_spec(spec)
+        assert provider in PROVIDERS, spec
+        assert model, spec
+
+
+def test_default_and_fallback_are_different():
+    from vocab_gen.generate import FALLBACK_MODEL
+
+    assert DEFAULT_MODEL != FALLBACK_MODEL
 
 
 @pytest.mark.parametrize(

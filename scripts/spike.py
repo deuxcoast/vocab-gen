@@ -41,10 +41,14 @@ def probe(spec: str, word: str, vocab, words, prefer, avoid) -> dict:
     started = time.perf_counter()
     row = {"spec": spec, "ok": False, "note": "", "secs": 0.0}
     try:
-        result, usage, used, effort = generate(
-            word, words, n=3, model=spec, prefer=prefer, avoid=avoid
+        outcome = generate(
+            word, words, n=3, model=spec, prefer=prefer, avoid=avoid,
+            allow_fallback=False,
         )
-    except SystemExit as exc:
+        result, usage, used, effort = (
+            outcome.result, outcome.usage, outcome.model, outcome.effort
+        )
+    except Exception as exc:
         row["note"] = str(exc).splitlines()[0]
         row["secs"] = time.perf_counter() - started
         return row

@@ -8,6 +8,7 @@ import sys
 from .collection import extract_vocab
 from .env import load_env
 from .history import History
+from .providers import PROVIDERS, available, why_unavailable
 from .render import back_html, prepare
 
 
@@ -43,6 +44,64 @@ def _print_result(word, result, cands, model, effort, color: bool) -> None:
         print(f"    • {bullet}")
     print(s(f"    {back_html(result.definition)}", "2"))
     print()
+
+
+KIND_LABEL = {
+    "auth": "API key rejected",
+    "balance": "out of credit",
+    "rate_limit": "rate limited",
+    "not_found": "no such model",
+    "connection": "cannot reach the API",
+    "setup": "install is broken",
+    "other": "failed",
+}
+
+
+def _print_failure(exc, color: bool) -> None:
+    s = _style(color)
+    label = KIND_LABEL.get(exc.kind, exc.kind)
+    print(file=sys.stderr)
+    print(s(f"  ✗ {exc.title} — {label}", "1;31"), file=sys.stderr)
+    for line in exc.message.splitlines():
+        print(f"    {line}", file=sys.stderr)
+    print(file=sys.stderr)
+
+
+def _print_fallback(exc, used: str, color: bool) -> None:
+    s = _style(color)
+    label = KIND_LABEL.get(exc.kind, exc.kind)
+    print(file=sys.stderr)
+    print(s(f"  ! {exc.provider} — {label}; used {used} instead", "1;33"), file=sys.stderr)
+    for line in exc.message.splitlines():
+        print(s(f"    {line}", "2"), file=sys.stderr)
+    print(file=sys.stderr)
+
+
+def check_providers(color: bool) -> int:
+    """One tiny real call per configured provider, so failures are visible."""
+    from .generate import GenerationError, _generate_once, resolve_model, split_spec
+
+    s = _style(color)
+    print()
+    worst = 0
+    for name in PROVIDERS:
+        if not available(name):
+            print(f"  {'-':2s} {name:12s} {why_unavailable(name)}")
+            continue
+        spec = resolve_model(name)
+        try:
+            _generate_once(spec, "obdurate", ["zephyr", "strait"], 1, None, None, None, None)
+            print(s(f"  ok {name:12s} {spec}", "32"))
+        except GenerationError as exc:
+            label = KIND_LABEL.get(exc.kind, exc.kind)
+            print(s(f"  ✗  {name:12s} {label}", "1;31"))
+            print(s(f"     {exc.message.splitlines()[0]}", "2"))
+            worst = 1
+        except Exception as exc:  # never let one provider stop the sweep
+            print(s(f"  ✗  {name:12s} {type(exc).__name__}: {str(exc)[:70]}", "1;31"))
+            worst = 1
+    print()
+    return worst
 
 
 def _ask_which_kept(cands: list[dict]) -> int | None:
@@ -91,6 +150,10 @@ def main(argv: list[str] | None = None) -> int:
         "--stats", action="store_true", help="show which deck words have been used, then exit"
     )
     parser.add_argument(
+        "--check", action="store_true",
+        help="probe every configured provider and report its status, then exit",
+    )
+    parser.add_argument(
         "--no-history",
         action="store_true",
         help="don't steer toward unused words, and don't record this run",
@@ -118,6 +181,9 @@ def main(argv: list[str] | None = None) -> int:
         for w in words:
             print(w)
         return 0
+
+    if args.check:
+        return check_providers(color=sys.stdout.isatty())
 
     if args.stats:
         cov = History.load().coverage(words)
@@ -147,16 +213,28 @@ def main(argv: list[str] | None = None) -> int:
     prefer, avoid = history.plan(vocab) if history else ([], [])
     kept = history.recent_kept() if history else []
 
-    result, usage, model, effort = generate(
-        args.word,
-        words,
-        n=args.count,
-        model=args.model,
-        prefer=prefer,
-        avoid=avoid,
-        effort=args.effort,
-        kept=kept,
+    from .generate import GenerationError
+
+    try:
+        outcome = generate(
+            args.word,
+            words,
+            n=args.count,
+            model=args.model,
+            prefer=prefer,
+            avoid=avoid,
+            effort=args.effort,
+            kept=kept,
+        )
+    except GenerationError as exc:
+        _print_failure(exc, color=sys.stderr.isatty())
+        return 1
+
+    result, usage, model, effort = (
+        outcome.result, outcome.usage, outcome.model, outcome.effort
     )
+    if outcome.fell_back_from is not None:
+        _print_fallback(outcome.fell_back_from, model, color=sys.stderr.isatty())
     cands = prepare(result, args.word, words)
 
     if args.html:
