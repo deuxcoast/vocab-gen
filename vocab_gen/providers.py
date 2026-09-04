@@ -80,7 +80,7 @@ class ProviderConfig:
     # Whether response_format supports a real JSON *schema*, not just "some JSON".
     json_schema: bool = True
     # How reasoning depth is expressed, if at all.
-    # None | "openai_effort" | "qwen_thinking" | "zhipu_thinking" | "anthropic_effort"
+    # None | "openai_effort" | "qwen_thinking" | "thinking_toggle" | "anthropic_effort"
     reasoning: str | None = None
     # Explicit cache_control markers, vs. automatic prefix caching server-side.
     explicit_cache: bool = False
@@ -112,7 +112,8 @@ PROVIDERS: dict[str, ProviderConfig] = {
         # third-party sources claim strict schema on V4 Pro. Assume the weaker
         # of the two — the fallback works either way and reports which ran.
         json_schema=False,
-        reasoning="openai_effort",  # docs show reasoning_effort and thinking
+        # Takes reasoning_effort but ignores it; the thinking switch is what works.
+        reasoning="thinking_toggle",
         default_model="deepseek-v4-flash",
         notes=(
             "Automatic prefix caching, on by default. Peak pricing (01:00-04:00 "
@@ -126,6 +127,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         key_env="MOONSHOT_API_KEY",
         key_aliases=("KIMI_API_KEY",),
         json_schema=True,
+        reasoning="thinking_toggle",
         default_model="kimi-k2.6",
         notes=(
             "Kimi. Docs moved to platform.kimi.ai; the API host is unverified — "
@@ -143,7 +145,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         # glm-4.7-flash accepts response_format=json_schema and then ignores it,
         # returning prose. Ask for json_object and inline the schema instead.
         json_schema=False,
-        reasoning="zhipu_thinking",
+        reasoning="thinking_toggle",
         default_model="glm-4.7-flash",
         notes=(
             "GLM. Mainland endpoint is open.bigmodel.cn/api/paas/v4. "
@@ -504,9 +506,11 @@ class OpenAICompatProvider:
             return {"reasoning_effort": level}
         if self.cfg.reasoning == "qwen_thinking":
             return {"extra_body": {"enable_thinking": effort not in (None, "low")}}
-        if self.cfg.reasoning == "zhipu_thinking":
-            # Left on, GLM spends thousands of tokens reasoning about a sentence
-            # and can exhaust the whole budget before emitting any content.
+        if self.cfg.reasoning == "thinking_toggle":
+            # GLM, DeepSeek and Kimi share this switch, and it is the only one
+            # that works: DeepSeek ignores reasoning_effort (3303 output tokens
+            # either way) and Kimi gets *worse* with it (7982 tokens, 100s).
+            # Disabled, both drop to under 200 tokens and a few seconds.
             state = "enabled" if effort not in (None, "low") else "disabled"
             return {"extra_body": {"thinking": {"type": state}}}
         return {}

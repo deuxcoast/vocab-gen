@@ -52,6 +52,7 @@ def test_effort_only_sent_where_supported():
     # DeepSeek V4 does take reasoning_effort — an earlier version of this file
     # assumed it did not, which would have benchmarked it with reasoning off.
     assert supports_effort("deepseek:deepseek-v4-flash") is True
+    assert supports_effort("moonshot:kimi-k2.6") is True
     assert supports_effort("dashscope:qwen3.8-flash") is True
     assert supports_effort("minimax:MiniMax-M2.7") is False
 
@@ -347,6 +348,16 @@ def test_genuine_rate_limiting_still_says_so():
 
     msg = _explain("zhipu", "glm-4.7-flash", Exc("Too many requests, slow down"))
     assert "rate limited" in msg.lower()
+
+
+def test_deepseek_and_kimi_use_the_thinking_toggle(monkeypatch):
+    """reasoning_effort is a trap on both: ignored by DeepSeek, worse on Kimi."""
+    for provider in ("deepseek", "moonshot"):
+        captured = {}
+        _fake_openai(monkeypatch, '{"value": "x"}', captured=captured)
+        _complete(OpenAICompatProvider(config_for(provider)), effort="low")
+        assert captured["extra_body"]["thinking"] == {"type": "disabled"}, provider
+        assert "reasoning_effort" not in captured, provider
 
 
 def test_zhipu_thinking_is_disabled_at_low_effort(monkeypatch):
