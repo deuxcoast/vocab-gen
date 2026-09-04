@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from vocab_gen.generate import Generation, resolve_model, split_spec, supports_effort
 from vocab_gen.providers import (
+    MODEL_PRICING,
     OpenAICompatProvider,
     ProviderError,
     SystemBlock,
@@ -14,7 +15,9 @@ from vocab_gen.providers import (
     api_key_for,
     available,
     config_for,
+    cost_of,
     extract_json,
+    why_unavailable,
 )
 
 
@@ -46,9 +49,11 @@ def test_anthropic_aliases_still_work(monkeypatch):
 def test_effort_only_sent_where_supported():
     assert supports_effort("claude-opus-5") is True
     assert supports_effort("claude-haiku-4-5") is False
-    # DeepSeek exposes reasoning as a separate model, not a parameter.
-    assert supports_effort("deepseek:deepseek-chat") is False
-    assert supports_effort("dashscope:qwen-max") is True
+    # DeepSeek V4 does take reasoning_effort — an earlier version of this file
+    # assumed it did not, which would have benchmarked it with reasoning off.
+    assert supports_effort("deepseek:deepseek-v4-flash") is True
+    assert supports_effort("dashscope:qwen3.8-flash") is True
+    assert supports_effort("minimax:MiniMax-M2.7") is False
 
 
 def test_unknown_provider_is_reported():
@@ -222,7 +227,7 @@ def test_reasoning_effort_is_translated_per_vendor(monkeypatch):
 def test_no_reasoning_param_for_providers_without_one(monkeypatch):
     captured = {}
     _fake_openai(monkeypatch, '{"value": "x"}', captured=captured)
-    _complete(OpenAICompatProvider(config_for("deepseek")), effort="high")
+    _complete(OpenAICompatProvider(config_for("minimax")), effort="high")
     assert "reasoning_effort" not in captured
 
 
@@ -237,3 +242,57 @@ def test_generation_schema_survives_strictify():
     out = _strictify(Generation.model_json_schema())
     assert json.dumps(out)  # serialisable
     assert out["additionalProperties"] is False
+
+
+# --- endpoints that cannot be defaulted --------------------------------------
+
+
+def test_workspace_scoped_provider_is_unavailable_without_a_base_url(monkeypatch):
+    """Qwen's endpoint is account-specific; a hardcoded guess would just 404."""
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
+    monkeypatch.delenv("VOCAB_DASHSCOPE_BASE_URL", raising=False)
+    assert available("dashscope") is False
+    assert "BASE_URL" in why_unavailable("dashscope")
+
+
+def test_workspace_scoped_provider_becomes_available_with_one(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
+    monkeypatch.setenv("VOCAB_DASHSCOPE_BASE_URL", "https://w.example/compatible-mode/v1")
+    assert available("dashscope") is True
+    assert why_unavailable("dashscope") == ""
+
+
+def test_why_unavailable_names_the_missing_key(monkeypatch):
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.delenv("VOCAB_MINIMAX_API_KEY", raising=False)
+    assert why_unavailable("minimax") == "no MINIMAX_API_KEY"
+
+
+# --- costing -----------------------------------------------------------------
+
+
+def test_cost_uses_the_cached_rate_for_cached_tokens():
+    warm = cost_of("anthropic:claude-sonnet-5", Usage(input_tokens=1000, cache_read=5000, output_tokens=300))
+    cold = cost_of("anthropic:claude-sonnet-5", Usage(input_tokens=6000, output_tokens=300))
+    assert warm < cold
+
+
+def test_cost_of_a_free_model_is_zero():
+    assert cost_of("zhipu:glm-4.7-flash", Usage(input_tokens=9999, output_tokens=9999)) == 0.0
+
+
+def test_unknown_model_has_no_price():
+    assert cost_of("ollama:qwen3", Usage(input_tokens=100)) is None
+
+
+def test_every_priced_model_names_a_real_provider():
+    from vocab_gen.providers import PROVIDERS
+
+    for spec in MODEL_PRICING:
+        provider = spec.split(":", 1)[0]
+        assert provider in PROVIDERS, spec
+
+
+def test_pricing_is_ordered_cached_cheaper_than_input():
+    for spec, (price_in, cached, _out) in MODEL_PRICING.items():
+        assert cached <= price_in, spec

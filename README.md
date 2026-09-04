@@ -65,8 +65,25 @@ uv run python scripts/spike.py deepseek zhipu  # specific ones
 uv run python scripts/spike.py anthropic --repeat 2   # 2+ calls shows caching
 ```
 
-It reports reachability, schema validity, tokens, cache behaviour, and — using the graders
-already in the app — how many reuse claims were verified versus invented.
+It reports reachability, schema validity, tokens, cache behaviour, projected dollars per 100
+cards, and — using the graders already in the app — how many reuse claims were verified versus
+invented.
+
+```
+spec                           ok      in    out     cw     cr claim  ver  inv give  secs   $/100
+anthropic:claude-sonnet-5      yes    980    300      0   5179     3    3    0    1   5.7   0.600
+```
+
+Rates in `MODEL_PRICING` were checked 2026-09-04 and will drift; the spike stamps the date it
+is quoting. Endpoints and model ids drift too, which is why every one is overridable.
+
+**Cheapest way to start:** `glm-4.7-flash` and `glm-4.5-flash` are free, and new Alibaba Cloud
+accounts get a large free trial — enough to probe two vendors without paying anything.
+
+One thing worth knowing before optimising for price: on EQ-Bench creative writing (Aug 2026)
+Kimi K3 ranks second behind Claude Opus 5, ahead of GPT-5.6 — but it costs *more* per card
+than Claude Sonnet 5. The cheap Chinese tier is 13-26x cheaper and, for this task, entirely
+unmeasured. That gap is what the harness is for.
 
 ## Choosing a model and effort level
 

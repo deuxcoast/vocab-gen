@@ -27,7 +27,13 @@ from vocab_gen.collection import extract_vocab  # noqa: E402
 from vocab_gen.env import load_env  # noqa: E402
 from vocab_gen.generate import generate, resolve_model, split_spec  # noqa: E402
 from vocab_gen.history import History  # noqa: E402
-from vocab_gen.providers import PROVIDERS, available, config_for  # noqa: E402
+from vocab_gen.providers import (  # noqa: E402
+    PRICING_CHECKED,
+    PROVIDERS,
+    available,
+    cost_of,
+    why_unavailable,
+)
 from vocab_gen.render import prepare, unknown_claims  # noqa: E402
 
 
@@ -60,6 +66,7 @@ def probe(spec: str, word: str, vocab, words, prefer, avoid) -> dict:
         invented=invented,
         giveaway=sum(1 for c in cands if c["giveaway"]),
         sample=cands[0]["sentence"] if cands else "",
+        cost=cost_of(spec, usage),
     )
     return row
 
@@ -85,7 +92,7 @@ def main() -> int:
     skipped = []
     for name in PROVIDERS:
         if name not in specs and not available(name):
-            skipped.append(f"{name} (no {config_for(name).key_env})")
+            skipped.append(f"{name} ({why_unavailable(name)})")
 
     rows = []
     for spec in specs:
@@ -97,22 +104,31 @@ def main() -> int:
         for _ in range(args.repeat):
             rows.append(probe(resolved, args.word, vocab, words, prefer, avoid))
 
-    head = f"{'spec':34s} {'ok':3s} {'in':>6s} {'out':>6s} {'cw':>6s} {'cr':>6s} "
-    head += f"{'claim':>5s} {'ver':>4s} {'inv':>4s} {'give':>4s} {'secs':>5s}"
+    head = f"{'spec':30s} {'ok':3s} {'in':>6s} {'out':>6s} {'cw':>6s} {'cr':>6s} "
+    head += f"{'claim':>5s} {'ver':>4s} {'inv':>4s} {'give':>4s} {'secs':>5s} {'$/100':>7s}"
     print(head)
     print("-" * len(head))
     for r in rows:
         if not r.get("ok"):
-            print(f"{r['spec']:34s} {'--':3s}  {r.get('note', '')[:60]}")
+            print(f"{r['spec']:30s} {'--':3s}  {r.get('note', '')[:66]}")
             continue
+        cost = r.get("cost")
+        money = f"{cost * 100:7.3f}" if cost is not None else "      ?"
         print(
-            f"{r['spec']:34s} {'yes':3s} {r['input']:6d} {r['output']:6d} "
-            f"{r['cache_write']:6d} {r['cache_read']:6d} {r['claimed']:5d} {r['verified']:4d} "
-            f"{r['invented']:4d} {r['giveaway']:4d} {r['secs']:5.1f}"
+            f"{r['spec']:30s} {'yes':3s} {r['input']:6d} {r['output']:6d} "
+            f"{r['cache_write']:6d} {r['cache_read']:6d} {r['claimed']:5d} "
+            f"{r['verified']:4d} {r['invented']:4d} {r['giveaway']:4d} "
+            f"{r['secs']:5.1f} {money}"
         )
 
-    print("\nlegend: claim=reuses asserted · ver=verified real · inv=hallucinated "
-          "· give=candidates leaking the definition")
+    print(
+        "\nlegend: cw/cr=cache write/read · claim=reuses asserted · ver=verified "
+        "real · inv=hallucinated · give=candidates leaking the definition"
+    )
+    print(
+        f"$/100 = projected dollars per 100 cards at this call's token mix; "
+        f"rates checked {PRICING_CHECKED}, '?' means unpriced."
+    )
     for r in rows:
         if r.get("ok") and r.get("sample"):
             print(f"\n--- {r['spec']}\n    {r['sample']}")

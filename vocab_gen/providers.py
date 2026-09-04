@@ -85,6 +85,8 @@ class ProviderConfig:
     explicit_cache: bool = False
     default_model: str = ""
     notes: str = ""
+    # True when the endpoint is account-specific and cannot be defaulted.
+    needs_base_url: bool = False
 
 
 PROVIDERS: dict[str, ProviderConfig] = {
@@ -102,46 +104,69 @@ PROVIDERS: dict[str, ProviderConfig] = {
         kind="openai",
         base_url="https://api.deepseek.com",
         key_env="DEEPSEEK_API_KEY",
-        json_schema=False,  # json_object mode; verify whether schema is supported
-        reasoning=None,  # reasoning is a separate model, not a parameter
-        default_model="deepseek-chat",
-        notes="Automatic prefix caching server-side; reasoning via a separate model id.",
+        # Official docs advertise "Json Output" but document only json_mode;
+        # third-party sources claim strict schema on V4 Pro. Assume the weaker
+        # of the two — the fallback works either way and reports which ran.
+        json_schema=False,
+        reasoning="openai_effort",  # docs show reasoning_effort and thinking
+        default_model="deepseek-v4-flash",
+        notes=(
+            "Automatic prefix caching, on by default. Peak pricing (01:00-04:00 "
+            "and 06:00-10:00 UTC, Mon-Fri) is double off-peak."
+        ),
     ),
     "moonshot": ProviderConfig(
         name="moonshot",
         kind="openai",
-        base_url="https://api.moonshot.cn/v1",
+        base_url="https://api.moonshot.ai/v1",
         key_env="MOONSHOT_API_KEY",
-        json_schema=False,
-        default_model="moonshot-v1-32k",
-        notes="Kimi. International endpoint differs; override with VOCAB_MOONSHOT_BASE_URL.",
+        json_schema=True,
+        default_model="kimi-k2.6",
+        notes=(
+            "Kimi. Docs moved to platform.kimi.ai; the API host is unverified — "
+            "override VOCAB_MOONSHOT_BASE_URL if calls 404. The mainland host is "
+            "api.moonshot.cn/v1. K3 ranks 2nd on EQ-Bench creative writing but "
+            "costs more per card than Claude Sonnet 5."
+        ),
     ),
     "zhipu": ProviderConfig(
         name="zhipu",
         kind="openai",
-        base_url="https://open.bigmodel.cn/api/paas/v4",
+        base_url="https://api.z.ai/api/paas/v4",
         key_env="ZHIPUAI_API_KEY",
-        json_schema=False,
-        default_model="glm-4-plus",
-        notes="GLM family.",
+        json_schema=True,
+        default_model="glm-5.3-flash",
+        notes=(
+            "GLM. Mainland endpoint is open.bigmodel.cn/api/paas/v4. "
+            "glm-4.7-flash and glm-4.5-flash are free — the cheapest way to run "
+            "the spike. GLM-5.2 weights are MIT."
+        ),
     ),
     "dashscope": ProviderConfig(
         name="dashscope",
         kind="openai",
-        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        # Workspace-scoped now, so there is no usable default to hardcode.
+        base_url=None,
+        needs_base_url=True,
         key_env="DASHSCOPE_API_KEY",
-        json_schema=True,
+        json_schema=True,  # strict schema confirmed on 3.7/3.8 series
         reasoning="qwen_thinking",
-        default_model="qwen-max",
-        notes="Alibaba Qwen. Mainland endpoint drops the -intl.",
+        default_model="qwen3.8-flash",
+        notes=(
+            "Alibaba Qwen. Set VOCAB_DASHSCOPE_BASE_URL to "
+            "https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 "
+            "(or cn-beijing). Strict json_schema on the 3.7/3.8 series. New "
+            "accounts get a large free trial; Qwen3.5 weights are Apache-2.0."
+        ),
     ),
     "minimax": ProviderConfig(
         name="minimax",
         kind="openai",
         base_url="https://api.minimax.chat/v1",
         key_env="MINIMAX_API_KEY",
-        json_schema=False,
-        default_model="abab6.5s-chat",
+        json_schema=False,  # unverified; fallback path is safe
+        default_model="MiniMax-M2.7",
+        notes="Open weights. Host unverified — override if calls fail.",
     ),
     "ollama": ProviderConfig(
         name="ollama",
@@ -164,6 +189,44 @@ PROVIDERS: dict[str, ProviderConfig] = {
 }
 
 
+# Published rates in USD per million tokens, as (input, cached input, output).
+# Checked 2026-09-04; vendors move these, so treat any cost the spike reports as
+# indicative and re-check before a real decision. DeepSeek is quoted off-peak.
+PRICING_CHECKED = "2026-09-04"
+MODEL_PRICING: dict[str, tuple[float, float, float]] = {
+    "anthropic:claude-opus-5": (5.00, 0.50, 25.00),
+    "anthropic:claude-sonnet-5": (2.00, 0.20, 10.00),
+    "anthropic:claude-haiku-4-5": (1.00, 0.10, 5.00),
+    "deepseek:deepseek-v4-flash": (0.22, 0.007, 0.66),
+    "deepseek:deepseek-v4-pro": (0.66, 0.022, 1.98),
+    "zhipu:glm-5.3": (1.40, 0.26, 4.40),
+    "zhipu:glm-5.2": (1.40, 0.26, 4.40),
+    "zhipu:glm-5.3-flash": (0.075, 0.015, 0.25),
+    "zhipu:glm-4.7-flash": (0.0, 0.0, 0.0),
+    "zhipu:glm-4.5-flash": (0.0, 0.0, 0.0),
+    "moonshot:kimi-k3": (3.00, 0.30, 15.00),
+    "moonshot:kimi-k2.6": (0.95, 0.16, 4.00),
+    "moonshot:kimi-k2.5": (0.60, 0.10, 3.00),
+    "dashscope:qwen3.8-max": (2.00, 0.25, 6.00),
+    "dashscope:qwen3.5-flash": (0.10, 0.0125, 0.40),
+    "minimax:MiniMax-M2.7": (0.30, 0.06, 1.20),
+}
+
+
+def cost_of(spec: str, usage) -> float | None:
+    """Dollars for one call, or None when the model is not in the price table."""
+    rates = MODEL_PRICING.get(spec)
+    if rates is None:
+        return None
+    price_in, price_cached, price_out = rates
+    return (
+        usage.input_tokens * price_in
+        + usage.cache_read * price_cached
+        + usage.cache_write * price_in * 1.25  # writes carry a premium
+        + usage.output_tokens * price_out
+    ) / 1_000_000
+
+
 def config_for(provider: str) -> ProviderConfig:
     try:
         cfg = PROVIDERS[provider]
@@ -184,7 +247,19 @@ def api_key_for(cfg: ProviderConfig) -> str | None:
 def available(provider: str) -> bool:
     """Do we have what we need to call this provider at all?"""
     cfg = config_for(provider)
+    if cfg.needs_base_url and not cfg.base_url:
+        return False
     return bool(api_key_for(cfg))
+
+
+def why_unavailable(provider: str) -> str:
+    """A sentence explaining what is missing, for the CLI and the spike."""
+    cfg = config_for(provider)
+    if cfg.needs_base_url and not cfg.base_url:
+        return f"needs VOCAB_{provider.upper()}_BASE_URL ({cfg.notes})"
+    if not api_key_for(cfg):
+        return f"no {cfg.key_env}"
+    return ""
 
 
 # --------------------------------------------------------------------------
