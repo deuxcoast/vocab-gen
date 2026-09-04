@@ -26,6 +26,7 @@ from ..history import History
 from ..providers import cost_of
 from ..prompts import get as get_variant
 from .cases import Case, subset
+from ..render import prepare, rank_candidates
 from .graders import grade_candidate
 from .judge import DEFAULT_JUDGE, judge_case, overall
 
@@ -74,6 +75,7 @@ def run(
     variants: list[str] | None = None,
     n_cases: int | None = None,
     n_candidates: int = 3,
+    oversample: int = 1,
     seed: int = 20260904,
     judge_model: str | None = DEFAULT_JUDGE,
     deck: str = "General",
@@ -94,39 +96,53 @@ def run(
         spec = resolve_model(model)
         for variant_name in (variants or ["baseline"]):
             variant = get_variant(variant_name)
+            # Over-sampling is a separate arm, so paired comparison can see it.
+            arm = f"{variant_name}+os{oversample}" if oversample > 1 else variant_name
             for case in cases:
                 started = time.perf_counter()
                 try:
                     outcome = generate(
                         case.word, words, n=n_candidates, model=spec,
                         prefer=prefer, avoid=avoid, kept=[], allow_fallback=False,
-                        variant=variant,
+                        variant=variant, oversample=oversample,
                     )
                     result, usage, used = outcome.result, outcome.usage, outcome.model
                 except Exception as exc:
                     on_event("error", spec, case.word, str(exc).splitlines()[0])
                     rows.append(
-                        _error_row(run_id, spec, variant_name, case, str(exc).splitlines()[0])
+                        _error_row(run_id, spec, arm, case, str(exc).splitlines()[0])
                     )
                     continue
                 latency = time.perf_counter() - started
                 cost = cost_of(used, usage)
 
-                for i, cand in enumerate(result.candidates):
+                # Rank and truncate exactly as the CLI does, so the eval scores
+                # what a user would actually be shown rather than the raw pool.
+                shown = result.candidates
+                if oversample > 1:
+                    keep = {
+                        c["sentence"]
+                        for c in rank_candidates(
+                            prepare(result, case.word, words), n_candidates
+                        )
+                    }
+                    shown = [c for c in result.candidates if c.sentence in keep][:n_candidates]
+
+                for i, cand in enumerate(shown):
                     g = grade_candidate(
                             cand, case.word, result.definition, words,
                             getattr(result, 'part_of_speech', ''),
                         )
                     rows.append(
                         Row(
-                            run_id=run_id, model=used, variant=variant_name,
+                            run_id=run_id, model=used, variant=arm,
                             word=case.word, pos=case.pos,
                             register=case.register, index=i,
                             latency=latency, input_tokens=usage.input_tokens,
                             output_tokens=usage.output_tokens,
                             cache_read=usage.cache_read_input_tokens,
                             # generation cost, split across its candidates
-                            cost=(cost / len(result.candidates)) if cost is not None else None,
+                            cost=(cost / max(len(shown), 1)) if cost is not None else None,
                             **{k: g[k] for k in (
                                 "sentence", "words", "has_target", "claimed", "verified",
                                 "unreported", "reused", "no_invented_reuse", "invented", "gives_away",

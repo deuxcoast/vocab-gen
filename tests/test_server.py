@@ -35,10 +35,10 @@ class _Usage:
 def stub_generate(result):
     """Match generate()'s signature in one place, so it drifts in one place."""
 
-    def _stub(
-        word, words, n=3, model=None, prefer=None, avoid=None, effort=None,
-        kept=None, allow_fallback=True,
-    ):
+    def _stub(word, words, *args, **kwargs):
+        # Deliberately signature-agnostic: this stub has drifted from the real
+        # generate() four times as parameters were added, and each time the
+        # failure looked like a server bug rather than a stale test.
         from vocab_gen.generate import Outcome
 
         return Outcome(result, _Usage(), "test-model", "low")

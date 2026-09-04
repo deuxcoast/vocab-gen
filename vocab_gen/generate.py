@@ -216,6 +216,7 @@ def generate(
     kept: list[dict] | None = None,
     allow_fallback: bool = True,
     variant: str | PromptVariant | None = None,
+    oversample: int = 1,
 ) -> Outcome:
     """Generate candidates, falling back to a second model if the first cannot.
 
@@ -225,9 +226,13 @@ def generate(
     somewhere else.
     """
     spec = resolve_model(model)
+    # Over-generating is cheap: the candidates share one call, so the cached
+    # input is paid once and only the output scales. Six candidates cost 1.43x
+    # three, not 2x.
+    asked = max(1, n * max(1, oversample))
     try:
         return _generate_once(
-            spec, word, words, n, prefer, avoid, effort, kept,
+            spec, word, words, asked, prefer, avoid, effort, kept,
             variant if variant is not None else DEFAULT_VARIANT,
         )
     except GenerationError as primary:
@@ -245,7 +250,7 @@ def generate(
             # The fallback runs on a different model, which needs a different
             # prompt: the balanced variant measurably degrades Qwen.
             outcome = _generate_once(
-                fallback, word, words, n, prefer, avoid, effort, kept,
+                fallback, word, words, asked, prefer, avoid, effort, kept,
                 variant if variant is not None else FALLBACK_VARIANT,
             )
         except GenerationError as secondary:

@@ -273,3 +273,31 @@ def prepare(result, word: str, deck: list[str]) -> list[dict]:
             }
         )
     return out
+
+
+def rank_candidates(prepared: list[dict], keep: int) -> list[dict]:
+    """Order over-generated candidates and keep the best `keep`.
+
+    Ranking rather than filtering: a hard filter on reuse can leave fewer
+    candidates than asked for — at a 49% reuse rate, six generations yield three
+    reusing ones only about 60% of the time — and throwing the rest away is
+    worse than showing them last.
+
+    Order is by the free programmatic signals, strongest first: a candidate that
+    is unusable at all, then one that reuses nothing, then one that leaks its
+    definition or uses the wrong sense. Within a tier the model's own order is
+    kept, since nothing here can rank prose.
+    """
+
+    def key(index_and_candidate):
+        i, c = index_and_candidate
+        return (
+            bool(c.get("missing_target")),  # no target word at all: last
+            not bool(c.get("reused")),      # reuses something: first
+            bool(c.get("wrong_sense")),
+            bool(c.get("giveaway")),
+            i,                              # otherwise the model's own order
+        )
+
+    ordered = [c for _i, c in sorted(enumerate(prepared), key=key)]
+    return ordered[:keep] if keep > 0 else ordered

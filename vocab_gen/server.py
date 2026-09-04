@@ -15,7 +15,7 @@ from .collection import extract_vocab
 from . import anki
 from .generate import GenerationError
 from .history import History
-from .render import back_html, prepare
+from .render import back_html, prepare, rank_candidates
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -359,7 +359,7 @@ $('#f').onsubmit = async e => {
 """
 
 
-def _handler(deck, profile, model=None, effort=None):
+def _handler(deck, profile, model=None, effort=None, oversample=1):
     def load_vocab():
         v = extract_vocab(deck=deck, profile=profile)
         return v, [w.term for w in v]
@@ -464,10 +464,11 @@ def _handler(deck, profile, model=None, effort=None):
                     avoid=avoid,
                     effort=effort,
                     kept=history.recent_kept(),
+                    oversample=oversample,
                 )
                 result = outcome.result
                 used, used_effort = outcome.model, outcome.effort
-                cands = prepare(result, word, words)
+                cands = rank_candidates(prepare(result, word, words), n)
                 for c in cands:
                     history.record(c["reused"])
                 history.save()
@@ -507,10 +508,11 @@ def serve(
     open_browser: bool = False,
     model: str | None = None,
     effort: str | None = None,
+    oversample: int = 1,
 ) -> int:
     # 127.0.0.1, never 0.0.0.0: this is a personal tool with no authentication.
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), _handler(deck, profile, model, effort))
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), _handler(deck, profile, model, effort, oversample))
     except OSError as exc:
         print(f"Cannot bind port {port}: {exc}\nTry --port {port + 1}.")
         return 1
