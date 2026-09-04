@@ -61,6 +61,18 @@ def verified_reuse(sentence: str, claimed: list[str], deck) -> list[str]:
     return out
 
 
+def unknown_claims(claimed: list[str], deck) -> list[str]:
+    """Claimed reuses that match no deck word at all — i.e. invented.
+
+    Must use the same inflection-aware lookup as verified_reuse: judging
+    membership literally would count "supplicant" against a deck holding
+    "supplicants" as a hallucination, inflating the rate for any model that
+    inflects its reuses.
+    """
+    known = {tuple(stem(t) for t in tokenize(term)) for term in deck}
+    return [w for w in claimed if tuple(stem(t) for t in tokenize(w)) not in known]
+
+
 # Words too common to signal that a definition has leaked into the sentence.
 _STOPWORDS = frozenset("""
 a an the and or but if of to in on at by for with from as is are was were be been being

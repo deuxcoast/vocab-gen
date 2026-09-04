@@ -34,6 +34,40 @@ uv run vocab --model haiku obdurate       # try a cheaper model
 uv run vocab --usage --model sonnet obdurate   # ...and see what it cost
 ```
 
+## Providers
+
+Models are addressed as `provider:model`; a bare id still means Anthropic, and a bare provider
+name resolves to its default model.
+
+```bash
+vocab --model deepseek obdurate            # provider default
+vocab --model zhipu:glm-4-plus obdurate    # explicit model
+vocab --model ollama:qwen3 obdurate        # local, no key needed
+```
+
+Credentials come from the vendor's usual variable (`DEEPSEEK_API_KEY`, `ZHIPUAI_API_KEY`, ...)
+or a `VOCAB_<PROVIDER>_API_KEY` override. Endpoints move, so
+`VOCAB_<PROVIDER>_BASE_URL` overrides the built-in one.
+
+`providers.py` exists because vendors disagree about the mechanics, not the task: how a system
+prompt is passed, whether caching is explicit or automatic, whether a JSON *schema* can be
+enforced or only "some JSON", and how reasoning depth is expressed. Providers that cannot
+enforce a schema get it inlined in the prompt and their output recovered from markdown fences
+or surrounding prose.
+
+### Feasibility spike
+
+Before comparing quality, check a provider can do the job at all:
+
+```bash
+uv run python scripts/spike.py                 # everything with credentials
+uv run python scripts/spike.py deepseek zhipu  # specific ones
+uv run python scripts/spike.py anthropic --repeat 2   # 2+ calls shows caching
+```
+
+It reports reachability, schema validity, tokens, cache behaviour, and — using the graders
+already in the app — how many reuse claims were verified versus invented.
+
 ## Choosing a model and effort level
 
 `--model` takes `opus`, `sonnet`, `haiku`, or any full model id. `--effort` takes `low`

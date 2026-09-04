@@ -176,3 +176,26 @@ def test_stopwords_and_short_words_are_ignored():
         )
         == []
     )
+
+
+from vocab_gen.render import unknown_claims
+
+
+def test_unknown_claims_flags_only_real_inventions():
+    assert unknown_claims(["mawkishness"], DECK) == ["mawkishness"]
+
+
+def test_unknown_claims_does_not_punish_inflection():
+    """The bug this replaces: 'supplicant' against a deck holding 'supplicants'."""
+    assert unknown_claims(["supplicant"], DECK) == []
+    assert unknown_claims(["adumbrates"], DECK) == []
+
+
+def test_unknown_claims_and_verified_reuse_agree():
+    """A claim cannot be both credited and counted as invented."""
+    sentence = "A lone supplicant waited near the strait."
+    claims = ["supplicant", "strait", "mawkishness"]
+    credited = verified_reuse(sentence, claims, DECK)
+    invented = unknown_claims(claims, DECK)
+    assert not (set(credited) & set(invented))
+    assert len(credited) + len(invented) == len(claims)
