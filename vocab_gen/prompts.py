@@ -123,6 +123,10 @@ class PromptVariant:
     avoid: bool = True  # send the recently-used words to skip
     kept: bool = True  # send previously kept sentences as calibration
     relatedness: bool = True  # ask for domain overlap when choosing a reuse
+    # Generate this many times the requested candidates and show the best. Part
+    # of the variant rather than a run-level flag so two arms differing only in
+    # over-sampling can be judged side by side, in one run, on the same words.
+    oversample: int = 1
 
     def system_text(self) -> str:
         return "\n\n".join(self.blocks)
@@ -156,6 +160,26 @@ VARIANTS: dict[str, PromptVariant] = {
             "naturalness within noise of it."
         ),
         blocks=(ROLE, WRITING, REUSE_BALANCED, DEFINITIONS),
+    ),
+    "baseline-os2": PromptVariant(
+        name="baseline-os2",
+        hypothesis=(
+            "The shipped prompt, generating six candidates and showing the best "
+            "three. Predicts reuse well above baseline's 49% at best-of-three "
+            "quality roughly flat, for 1.43x the cost — candidates share one "
+            "call, so only the output scales."
+        ),
+        blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
+        oversample=2,
+    ),
+    "baseline-os3": PromptVariant(
+        name="baseline-os3",
+        hypothesis=(
+            "As above with nine candidates. Tests whether the gain from "
+            "over-sampling keeps paying or flattens out."
+        ),
+        blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
+        oversample=3,
     ),
     "no-glosses": PromptVariant(
         name="no-glosses",

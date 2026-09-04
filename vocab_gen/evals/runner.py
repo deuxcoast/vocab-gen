@@ -96,15 +96,17 @@ def run(
         spec = resolve_model(model)
         for variant_name in (variants or ["baseline"]):
             variant = get_variant(variant_name)
-            # Over-sampling is a separate arm, so paired comparison can see it.
-            arm = f"{variant_name}+os{oversample}" if oversample > 1 else variant_name
+            # The variant may carry its own over-sampling; a run-level flag
+            # still works and wins, for a quick sweep without naming a variant.
+            factor = max(oversample, getattr(variant, "oversample", 1))
+            arm = f"{variant_name}+os{factor}" if factor > 1 and factor != variant.oversample else variant_name
             for case in cases:
                 started = time.perf_counter()
                 try:
                     outcome = generate(
                         case.word, words, n=n_candidates, model=spec,
                         prefer=prefer, avoid=avoid, kept=[], allow_fallback=False,
-                        variant=variant, oversample=oversample,
+                        variant=variant, oversample=factor,
                     )
                     result, usage, used = outcome.result, outcome.usage, outcome.model
                 except Exception as exc:
@@ -119,7 +121,7 @@ def run(
                 # Rank and truncate exactly as the CLI does, so the eval scores
                 # what a user would actually be shown rather than the raw pool.
                 shown = result.candidates
-                if oversample > 1:
+                if factor > 1:
                     keep = {
                         c["sentence"]
                         for c in rank_candidates(

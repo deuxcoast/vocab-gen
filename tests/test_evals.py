@@ -443,3 +443,37 @@ def test_the_enlarged_set_is_better_balanced():
     assert reg["concrete"] >= 15, reg
     pos = collections.Counter(c.pos for c in GOLDEN)
     assert min(pos.values()) >= 2, pos
+
+
+def test_oversampling_can_belong_to_a_variant(monkeypatch, tmp_path):
+    """So two arms differing only in over-sampling can be judged in one run."""
+    from vocab_gen.prompts import get
+
+    assert get("baseline-os2").oversample == 2
+    assert get("baseline").oversample == 1
+
+    asked = []
+
+    def fake_generate(word, words, n=3, oversample=1, **kw):
+        asked.append((n, oversample))
+        return _fake_outcome("m")
+
+    monkeypatch.setattr(runner, "generate", fake_generate)
+    monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
+    runner.run(["m"], variants=["baseline", "baseline-os2"], n_cases=1, judge_model=None)
+    assert (3, 1) in asked and (3, 2) in asked
+
+
+def test_the_variants_own_oversampling_reaches_generate(monkeypatch):
+    from vocab_gen import generate as gen
+    from vocab_gen.prompts import get
+
+    seen = {}
+    monkeypatch.setattr(
+        gen, "_generate_once",
+        lambda spec, word, words, n, *a, **kw: seen.update(n=n) or gen.Outcome(
+            types.SimpleNamespace(definition=[], candidates=[]), None, spec, "low"
+        ),
+    )
+    gen.generate("x", ["y"], n=3, variant=get("baseline-os2"))
+    assert seen["n"] == 6, "variant oversampling must reach the request"

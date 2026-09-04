@@ -229,7 +229,10 @@ def generate(
     # Over-generating is cheap: the candidates share one call, so the cached
     # input is paid once and only the output scales. Six candidates cost 1.43x
     # three, not 2x.
-    asked = max(1, n * max(1, oversample))
+    chosen = variant if isinstance(variant, PromptVariant) else get_variant(
+        variant if variant is not None else DEFAULT_VARIANT
+    )
+    asked = max(1, n * max(1, oversample, chosen.oversample))
     try:
         return _generate_once(
             spec, word, words, asked, prefer, avoid, effort, kept,
