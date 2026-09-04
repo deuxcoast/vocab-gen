@@ -57,3 +57,14 @@ def test_excluding_a_word_does_not_stop_you_targeting_it():
 
     message = build_user_message("niggardly", 3)
     assert "niggardly" in message
+
+
+def test_exclusion_is_justified_by_card_quality_not_by_classifiers():
+    """Recorded because the original rationale turned out to be wrong.
+
+    The list was written believing it would clear Alibaba's content filter. It
+    does not: measured on a paid account, the variant that had been rejected
+    passes with the slurs present. The rule is about what belongs on a card.
+    """
+    assert is_excluded("jigaboo")
+    assert not is_excluded("pogrom"), "not a slur; the rule is not about discomfort"

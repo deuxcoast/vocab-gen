@@ -12,10 +12,13 @@ deck, and it does not stop you generating a card *for* one of these words: if
 you ask for "niggardly" as a target you get it. The rule is about what the tool
 volunteers, not about what you may study.
 
-A secondary effect worth knowing: providers run safety classifiers over the
-whole request, and an 800-word list containing a slur scores higher than one
-without. On Alibaba this was enough to push some prompts over the threshold.
-That is a reason to prefer excluding them, not the reason.
+This list was written while a prompt variant was being rejected by Alibaba's
+safety classifier, on the theory that a word list containing a slur was scoring
+high enough to tip it over. That theory was tested afterwards and is wrong: with
+the account on a paid tier, the same variant passes 10 of 10 attempts whether
+the slurs are in the list or not. The exclusion stands on its own merit — a
+generated sentence containing a slur is not a card anyone wants — and buys
+nothing from any classifier.
 """
 
 from __future__ import annotations
