@@ -1,0 +1,54 @@
+"""Programmatic grading — everything measurable without asking a model.
+
+These reuse the app's own checks rather than reimplementing them, so a grader
+can never disagree with what the tool actually does to a card.
+"""
+
+from __future__ import annotations
+
+from ..render import gives_away_answer, strip_markdown, unknown_claims, verified_reuse
+from ..morphology import contains_form
+
+
+# A candidate failing any of these is unusable regardless of how it reads.
+HARD_GATES = ("has_target", "no_invented_reuse")
+
+
+def grade_candidate(candidate, word: str, definition: list[str], deck: list[str]) -> dict:
+    sentence = strip_markdown(candidate.sentence)
+    surface = strip_markdown(candidate.surface_form)
+    verified = verified_reuse(sentence, candidate.reused, deck)
+    invented = unknown_claims(candidate.reused, deck)
+    giveaway = gives_away_answer(sentence, definition, word)
+    present = contains_form(sentence, word) or contains_form(sentence, surface)
+
+    return {
+        "sentence": sentence,
+        "words": len(sentence.split()),
+        "has_target": present is not None,
+        "claimed": len(candidate.reused),
+        "verified": len(verified),
+        "reused": verified,
+        "no_invented_reuse": not invented,
+        "invented": invented,
+        "gives_away": bool(giveaway),
+        "giveaway_words": giveaway,
+        "usable": present is not None and not invented,
+    }
+
+
+def summarise(rows: list[dict]) -> dict:
+    """Aggregate per-candidate grades into rates."""
+    n = len(rows)
+    if not n:
+        return {"n": 0}
+    return {
+        "n": n,
+        "usable_rate": sum(r["usable"] for r in rows) / n,
+        "has_target_rate": sum(r["has_target"] for r in rows) / n,
+        "reuse_rate": sum(bool(r["verified"]) for r in rows) / n,
+        "reuses_per_sentence": sum(r["verified"] for r in rows) / n,
+        "invented_rate": sum(bool(r["invented"]) for r in rows) / n,
+        "giveaway_rate": sum(r["gives_away"] for r in rows) / n,
+        "mean_words": sum(r["words"] for r in rows) / n,
+    }

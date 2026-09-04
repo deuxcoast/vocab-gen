@@ -214,6 +214,42 @@ otherwise it would just trade one systematic bias for another.
 Note that reuse is recorded for every candidate shown, not just the one you keep, since the
 goal is variety in what you *see*.
 
+## Eval harness
+
+The spike answers "can this model do the job at all". The harness answers "which one is
+better", which cannot be done by reading a few sentences — a prompt change earlier in this
+project moved the reuse rate from 72% to 37% and eyeballing three sentences could not tell
+whether that was an improvement.
+
+```bash
+uv run python scripts/eval.py                          # every ready provider
+uv run python scripts/eval.py anthropic dashscope      # specific ones
+uv run python scripts/eval.py --cases 5 --no-judge     # cheap smoke run
+uv run python scripts/eval.py --report <run_id>        # re-render a stored run
+```
+
+Twenty target words, none of them in the deck, spread across part of speech and the
+concrete/abstract axis — the axis where the model's word-selection bias showed up.
+
+Most metrics are programmatic and reuse the app's own checks, so a grader can never disagree
+with what the tool actually does to a card: does the sentence contain the target word, does it
+invent deck words, does it leak the definition. The part no regex can score — *does this read
+as written prose or as a vocabulary exercise* — goes to an LLM judge.
+
+The judge is **blind and comparative**: candidates for one word are pooled across models,
+shuffled, and labelled A/B/C, then scored side by side in one call. It never learns which
+model wrote what. Naturalness is weighted double in the overall score.
+
+**A caveat that cannot be engineered away:** judging Claude output with a Claude judge risks
+self-preference. `--judge` is configurable for that reason; run it with judges from two
+families before trusting a close result.
+
+The headline number is **dollars per accepted card**, not per call. A model that is cheap per
+request but needs more attempts before one is usable is not actually cheap.
+
+Runs are stored as JSONL under `evals/runs/` so they can be re-analysed and compared without
+paying to regenerate them.
+
 ## Tests
 
 ```bash
