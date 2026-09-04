@@ -11,9 +11,9 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .collection import extract_terms
+from .collection import extract_vocab
 from .history import History
-from .render import back_html, verified_reuse, wrap_target
+from .render import back_html, prepare
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -63,6 +63,8 @@ PAGE = """<!doctype html>
   .sentence u { text-underline-offset: 3px; }
   .reuse { font-size: .82rem; color: var(--ok); font-family: ui-monospace, monospace; }
   .reuse.none { color: var(--muted); }
+  .giveaway { font-size: .82rem; color: #b4462f; font-family: ui-monospace, monospace; margin-top: .2rem; }
+  @media (prefers-color-scheme: dark) { .giveaway { color: #e08a70; } }
   .row { display: flex; gap: .4rem; margin-top: .8rem; flex-wrap: wrap; }
   .row button { padding: .35rem .6rem; font-size: .8rem; border-radius: 6px; }
   .defs { margin: 0; padding-left: 1.1rem; }
@@ -95,12 +97,13 @@ const $ = s => document.querySelector(s);
 
 fetch('/api/words').then(r => r.json()).then(d => { $('#count').textContent = d.count; });
 
-function copyBtn(label, text) {
+function copyBtn(label, text, onCopy) {
   const b = document.createElement('button');
   b.textContent = label;
   b.onclick = async () => {
     try {
       await navigator.clipboard.writeText(text);
+      if (onCopy) onCopy();
       const old = b.textContent; b.textContent = 'copied';
       setTimeout(() => { b.textContent = old; }, 1200);
     } catch { b.textContent = 'copy failed'; }
@@ -133,9 +136,19 @@ function render(data) {
     else { r.className = 'reuse none'; r.textContent = 'reuses nothing — stands on its own'; }
     card.appendChild(r);
 
+    if (c.giveaway && c.giveaway.length) {
+      const g = document.createElement('div');
+      g.className = 'giveaway';
+      g.textContent = 'gives the answer away: ' + c.giveaway.join(', ');
+      card.appendChild(g);
+    }
+
     const row = document.createElement('div');
     row.className = 'row';
-    row.appendChild(copyBtn('Copy front', c.front_html));
+    row.appendChild(copyBtn('Copy front', c.front_html, () => {
+      fetch('/api/choose', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({word: data.word, sentence: c.sentence, reused: c.reused})}).catch(()=>{});
+    }));
     row.appendChild(copyBtn('Copy back', data.back_html));
     card.appendChild(row);
 
@@ -191,6 +204,10 @@ $('#f').onsubmit = async e => {
 
 
 def _handler(deck, profile, model=None, effort=None):
+    def load_vocab():
+        v = extract_vocab(deck=deck, profile=profile)
+        return v, [w.term for w in v]
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -212,12 +229,27 @@ def _handler(deck, profile, model=None, effort=None):
                 self._send(200, PAGE.encode(), "text/html; charset=utf-8")
             elif self.path == "/api/words":
                 # Re-read every time: ~30 ms, so new cards show up without a restart.
-                words = extract_terms(deck=deck, profile=profile)
+                _, words = load_vocab()
                 self._json(200, {"count": len(words), "words": words})
             else:
                 self._json(404, {"error": "not found"})
 
         def do_POST(self):
+            if self.path == "/api/choose":
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                    req = json.loads(self.rfile.read(length) or b"{}")
+                    history = History.load()
+                    history.record_kept(
+                        (req.get("word") or "").strip(),
+                        (req.get("sentence") or "").strip(),
+                        list(req.get("reused") or []),
+                    )
+                    history.save()
+                    self._json(200, {"ok": True})
+                except Exception as exc:
+                    self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+                return
             if self.path != "/api/generate":
                 self._json(404, {"error": "not found"})
                 return
@@ -230,11 +262,11 @@ def _handler(deck, profile, model=None, effort=None):
                     return
                 n = max(1, min(int(req.get("n") or 3), 10))
 
-                words = extract_terms(deck=deck, profile=profile)
+                vocab, words = load_vocab()
                 from .generate import generate
 
                 history = History.load()
-                prefer, avoid = history.plan(words)
+                prefer, avoid = history.plan(vocab)
                 result, _usage, used, used_effort = generate(
                     word,
                     words,
@@ -243,10 +275,11 @@ def _handler(deck, profile, model=None, effort=None):
                     prefer=prefer,
                     avoid=avoid,
                     effort=effort,
+                    kept=history.recent_kept(),
                 )
-                known = {w.lower() for w in words}
-                for cand in result.candidates:
-                    history.record(verified_reuse(cand.sentence, cand.reused, known))
+                cands = prepare(result, word, words)
+                for c in cands:
+                    history.record(c["reused"])
                 history.save()
 
                 self._json(
@@ -257,14 +290,7 @@ def _handler(deck, profile, model=None, effort=None):
                         "part_of_speech": result.part_of_speech,
                         "definition": result.definition,
                         "back_html": back_html(result.definition),
-                        "candidates": [
-                            {
-                                "sentence": c.sentence,
-                                "front_html": wrap_target(c.sentence, c.surface_form),
-                                "reused": verified_reuse(c.sentence, c.reused, known),
-                            }
-                            for c in result.candidates
-                        ],
+                        "candidates": cands,
                     },
                 )
             except SystemExit as exc:  # missing credentials
@@ -291,7 +317,7 @@ def serve(
         return 1
 
     url = f"http://127.0.0.1:{port}/"
-    words = extract_terms(deck=deck, profile=profile)
+    words = [w.term for w in extract_vocab(deck=deck, profile=profile)]
     from .generate import resolve_model
 
     print(f"vocab · {len(words)} words from deck {deck!r} · {resolve_model(model)}")

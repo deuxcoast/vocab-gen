@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .collection import extract_terms
+from .collection import extract_vocab
 from .env import load_env
 from .history import History
-from .render import back_html, verified_reuse, wrap_target
+from .render import back_html, prepare
 
 
 def _style(enabled: bool):
@@ -17,24 +17,23 @@ def _style(enabled: bool):
     return lambda text, code: f"\033[{code}m{text}\033[0m"
 
 
-def _print_result(word, result, words, model: str, effort, color: bool) -> None:
+def _print_result(word, result, cands, model, effort, color: bool) -> None:
     s = _style(color)
-    known = {w.lower() for w in words}
+    tag = f"{model}/{effort}" if effort else model
 
     print()
-    tag = f"{model}/{effort}" if effort else model
     print(s(f"  {word}", "1;36"), s(f" · {result.part_of_speech} · {tag}", "2"))
     print()
 
-    for i, cand in enumerate(result.candidates, 1):
-        verified = verified_reuse(cand.sentence, cand.reused, known)
-        print(s(f"  {i}.", "1;33"), cand.sentence)
-        front = wrap_target(cand.sentence, cand.surface_form)
-        print(s(f"     {front}", "2"))
-        if verified:
-            print(s(f"     reuses: {', '.join(verified)}", "32"))
+    for i, c in enumerate(cands, 1):
+        print(s(f"  {i}.", "1;33"), c["sentence"])
+        print(s(f"     {c['front_html']}", "2"))
+        if c["reused"]:
+            print(s(f"     reuses: {', '.join(c['reused'])}", "32"))
         else:
             print(s("     reuses: nothing (no natural fit)", "2"))
+        if c["giveaway"]:
+            print(s(f"     ⚠ gives the answer away: {', '.join(c['giveaway'])}", "31"))
         print()
 
     print(s("  definition", "1;36"))
@@ -44,11 +43,19 @@ def _print_result(word, result, words, model: str, effort, color: bool) -> None:
     print()
 
 
-def _print_html(result) -> None:
-    for cand in result.candidates:
-        print(wrap_target(cand.sentence, cand.surface_form))
-    print()
-    print(back_html(result.definition))
+def _ask_which_kept(cands: list[dict]) -> int | None:
+    """Which candidate did you actually use? Skipped when not interactive."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+    try:
+        reply = input(f"  which did you keep? [1-{len(cands)}, enter to skip] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    if not reply.isdigit():
+        return None
+    idx = int(reply) - 1
+    return idx if 0 <= idx < len(cands) else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -102,7 +109,8 @@ def main(argv: list[str] | None = None) -> int:
             effort=args.effort,
         )
 
-    words = extract_terms(deck=args.deck, profile=args.profile)
+    vocab = extract_vocab(deck=args.deck, profile=args.profile)
+    words = [w.term for w in vocab]
 
     if args.list_words:
         for w in words:
@@ -114,6 +122,10 @@ def main(argv: list[str] | None = None) -> int:
         pct = 100 * cov["seen"] / cov["deck"] if cov["deck"] else 0
         print(f"  {cov['seen']} of {cov['deck']} deck words have appeared ({pct:.1f}%)")
         print(f"  {cov['unseen']} never used · {cov['uses']} reuses recorded")
+        shaky = sorted(vocab, key=lambda w: -w.shakiness)[:5]
+        print("\n  shakiest words in your deck (lapses / interval):")
+        for w in shaky:
+            print(f"    {w.term:20s} lapses={w.lapses} ivl={w.ivl}d")
         if cov["top"]:
             print("\n  most used:")
             for w, n in cov["top"]:
@@ -130,7 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     from .generate import generate
 
     history = None if args.no_history else History.load()
-    prefer, avoid = history.plan(words) if history else ([], [])
+    prefer, avoid = history.plan(vocab) if history else ([], [])
+    kept = history.recent_kept() if history else []
 
     result, usage, model, effort = generate(
         args.word,
@@ -140,20 +153,28 @@ def main(argv: list[str] | None = None) -> int:
         prefer=prefer,
         avoid=avoid,
         effort=args.effort,
+        kept=kept,
     )
-
-    if history is not None:
-        known = {w.lower() for w in words}
-        for cand in result.candidates:
-            history.record(verified_reuse(cand.sentence, cand.reused, known))
-        history.save()
+    cands = prepare(result, args.word, words)
 
     if args.html:
-        _print_html(result)
+        for c in cands:
+            print(c["front_html"])
+        print()
+        print(back_html(result.definition))
     else:
-        _print_result(
-            args.word, result, words, model, effort, color=sys.stdout.isatty()
-        )
+        _print_result(args.word, result, cands, model, effort, color=sys.stdout.isatty())
+
+    if history is not None:
+        for c in cands:
+            history.record(c["reused"])
+        if not args.html:
+            chosen = _ask_which_kept(cands)
+            if chosen is not None:
+                history.record_kept(
+                    args.word, cands[chosen]["sentence"], cands[chosen]["reused"]
+                )
+        history.save()
 
     if args.usage:
         print(

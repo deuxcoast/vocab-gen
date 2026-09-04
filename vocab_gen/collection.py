@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import tempfile
 from contextlib import contextmanager
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -101,6 +102,42 @@ def terms_in_html(html: str) -> list[str]:
     return parser.terms
 
 
+@dataclass(frozen=True)
+class VocabWord:
+    """A deck word plus what Anki knows about how well it is actually known."""
+
+    term: str
+    gloss: str = ""
+    lapses: int = 0
+    ivl: int = 0  # current interval in days; 0 means new or relearning
+    reps: int = 0
+
+    @property
+    def shakiness(self) -> float:
+        """How much this word still needs reinforcement. Higher is shakier.
+
+        Lapses dominate: forgetting a card you have already learned is the
+        clearest signal it has not stuck. A short interval is a weaker hint that
+        it is still bedding in. Never-studied cards score low on purpose — they
+        are already scheduled to come up on their own.
+        """
+        score = 1.0 + 2.0 * self.lapses
+        if 0 < self.ivl <= 21:
+            score += 1.5
+        elif 21 < self.ivl <= 60:
+            score += 0.5
+        return score
+
+
+_TAGS = re.compile(r"<[^>]+>")
+
+
+def html_to_text(html: str) -> str:
+    text = _TAGS.sub(" ", html.replace("&nbsp;", " ").replace("\xa0", " "))
+    text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _unicase(a: str, b: str) -> int:
     # Anki declares several text columns COLLATE unicase. Without a stub, any
     # query touching them fails with "no query solution".
@@ -138,16 +175,16 @@ def snapshot(profile: Path | None = None):
             conn.close()
 
 
-def extract_terms(deck: str = "General", profile: Path | None = None) -> list[str]:
-    """Every unique vocab word in `deck`, case-insensitively deduped and sorted.
+def extract_vocab(deck: str = "General", profile: Path | None = None) -> list[VocabWord]:
+    """Every unique vocab word in `deck`, with its gloss and review state.
 
-    Suspended cards (queue -1) are excluded. Measured at ~22 ms end to end, so
+    Suspended cards (queue -1) are excluded. Measured at ~30 ms end to end, so
     callers should just call this every time rather than caching it.
     """
     with snapshot(profile) as conn:
         rows = conn.execute(
             """
-            select distinct n.flds
+            select distinct n.id, n.flds, c.lapses, c.ivl, c.reps
               from notes n
               join cards c on c.nid = n.id
               join decks d on d.id = c.did
@@ -156,9 +193,28 @@ def extract_terms(deck: str = "General", profile: Path | None = None) -> list[st
             (deck.replace("::", FIELD_SEP) + "%",),
         ).fetchall()
 
-    seen: dict[str, str] = {}
-    for (flds,) in rows:
-        front = flds.split(FIELD_SEP)[0]
-        for term in terms_in_html(front):
-            seen.setdefault(term.lower(), term)
-    return sorted(seen.values(), key=str.lower)
+    seen: dict[str, VocabWord] = {}
+    for _nid, flds, lapses, ivl, reps in rows:
+        fields = flds.split(FIELD_SEP)
+        gloss = html_to_text(fields[1]) if len(fields) > 1 else ""
+        for term in terms_in_html(fields[0]):
+            key = term.lower()
+            prior = seen.get(key)
+            if prior is None:
+                seen[key] = VocabWord(term, gloss, lapses or 0, ivl or 0, reps or 0)
+            else:
+                # The same word can sit on several notes; keep the shakiest
+                # reading of it, since that is the one worth reinforcing.
+                seen[key] = VocabWord(
+                    prior.term,
+                    prior.gloss or gloss,
+                    max(prior.lapses, lapses or 0),
+                    min(prior.ivl, ivl or 0) if prior.ivl and ivl else (prior.ivl or ivl or 0),
+                    max(prior.reps, reps or 0),
+                )
+    return sorted(seen.values(), key=lambda w: w.term.lower())
+
+
+def extract_terms(deck: str = "General", profile: Path | None = None) -> list[str]:
+    """Just the words — the shape most callers and the prompt still want."""
+    return [w.term for w in extract_vocab(deck, profile)]
