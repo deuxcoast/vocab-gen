@@ -196,6 +196,8 @@ def test_every_model_sees_an_identical_prompt(monkeypatch, tmp_path):
 
     def fake_generate(word, words, n=3, model=None, prefer=None, avoid=None, **kw):
         seen.append((model, tuple(w.term for w in prefer), tuple(avoid)))
+        from vocab_gen.generate import Outcome
+
         result = types.SimpleNamespace(
             definition=["d"],
             candidates=[cand("The obdurate judge spoke.", "obdurate")],
@@ -204,7 +206,7 @@ def test_every_model_sees_an_identical_prompt(monkeypatch, tmp_path):
             input_tokens=1, output_tokens=1,
             cache_read_input_tokens=0, cache_creation_input_tokens=0,
         )
-        return result, usage, model, "low"
+        return Outcome(result, usage, model, "low")
 
     monkeypatch.setattr(runner, "generate", fake_generate)
     monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
@@ -223,6 +225,8 @@ def test_a_run_does_not_pollute_usage_history(monkeypatch, tmp_path):
     monkeypatch.setattr(History, "save", lambda self: recorded.append("saved"))
 
     def fake_generate(word, words, n=3, model=None, prefer=None, avoid=None, **kw):
+        from vocab_gen.generate import Outcome
+
         result = types.SimpleNamespace(
             definition=["d"], candidates=[cand("The obdurate judge spoke.", "obdurate")]
         )
@@ -230,7 +234,7 @@ def test_a_run_does_not_pollute_usage_history(monkeypatch, tmp_path):
             input_tokens=1, output_tokens=1,
             cache_read_input_tokens=0, cache_creation_input_tokens=0,
         )
-        return result, usage, model, "low"
+        return Outcome(result, usage, model, "low")
 
     monkeypatch.setattr(runner, "generate", fake_generate)
     monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
@@ -240,6 +244,8 @@ def test_a_run_does_not_pollute_usage_history(monkeypatch, tmp_path):
 
 def test_results_round_trip_to_disk(monkeypatch, tmp_path):
     def fake_generate(word, words, n=3, model=None, prefer=None, avoid=None, **kw):
+        from vocab_gen.generate import Outcome
+
         result = types.SimpleNamespace(
             definition=["d"], candidates=[cand("The obdurate judge spoke.", "obdurate")]
         )
@@ -247,7 +253,7 @@ def test_results_round_trip_to_disk(monkeypatch, tmp_path):
             input_tokens=5, output_tokens=7,
             cache_read_input_tokens=0, cache_creation_input_tokens=0,
         )
-        return result, usage, model, "low"
+        return Outcome(result, usage, model, "low")
 
     monkeypatch.setattr(runner, "generate", fake_generate)
     monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
@@ -260,7 +266,9 @@ def test_results_round_trip_to_disk(monkeypatch, tmp_path):
 def test_a_failing_model_does_not_abort_the_run(monkeypatch, tmp_path):
     def fake_generate(word, words, n=3, model=None, **kw):
         if model == "bad":
-            raise SystemExit("no balance")
+            raise RuntimeError("no balance")
+        from vocab_gen.generate import Outcome
+
         result = types.SimpleNamespace(
             definition=["d"], candidates=[cand("The obdurate judge spoke.", "obdurate")]
         )
@@ -268,7 +276,7 @@ def test_a_failing_model_does_not_abort_the_run(monkeypatch, tmp_path):
             input_tokens=1, output_tokens=1,
             cache_read_input_tokens=0, cache_creation_input_tokens=0,
         )
-        return result, usage, model, "low"
+        return Outcome(result, usage, model, "low")
 
     monkeypatch.setattr(runner, "generate", fake_generate)
     monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)

@@ -85,7 +85,30 @@ Kimi K3 ranks second behind Claude Opus 5, ahead of GPT-5.6 — but it costs *mo
 than Claude Sonnet 5. The cheap Chinese tier is 13-26x cheaper and, for this task, entirely
 unmeasured. That gap is what the harness is for.
 
+## Seeing failures
+
+This is a single-user tool, so failures are shown in full rather than hidden behind a generic
+message. Every failure is classified — `auth`, `balance`, `rate_limit`, `not_found`,
+`connection`, `setup` — and reported with the provider, the model, and the exact environment
+variable to check.
+
+```bash
+vocab --check     # probe every configured provider and report its status
+```
+
+The CLI prints failures to stderr in red; the web UI shows a red panel with the full message,
+newlines intact.
+
+If the default model cannot answer, the fallback runs — but never silently. A fallback prints
+a warning naming what failed and what was used instead. If both fail, the message names both,
+in order, so it points at the provider that actually broke first.
+
 ## Choosing a model and effort level
+
+The default is **`dashscope:qwen3.8-flash`** with **`moonshot:kimi-k2.6`** as fallback. Over
+234 judged candidates these were statistically indistinguishable from Claude Sonnet 5, at
+$0.011 and $0.151 per 100 accepted cards against Sonnet's $0.293. An explicit `--model`
+disables the fallback: choosing a model is an instruction, not a hint.
 
 `--model` takes `opus`, `sonnet`, `haiku`, or any full model id. `--effort` takes `low`
 (default), `medium`, `high`, `xhigh`, `max`. `VOCAB_MODEL` and `VOCAB_EFFORT` in `.env` set

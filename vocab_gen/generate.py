@@ -7,6 +7,7 @@ this module deliberately does not know about.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 import random
 import time
 
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from .providers import (
     PROVIDERS,
+    classify,
     ProviderError,
     SystemBlock,
     available,
@@ -21,7 +23,12 @@ from .providers import (
     config_for,
 )
 
-DEFAULT_MODEL = "claude-sonnet-5"
+# Measured over 234 candidates: Qwen3.8-Flash is statistically indistinguishable
+# from Claude Sonnet 5 on judged quality and costs $0.011 per 100 accepted cards
+# against Sonnet's $0.293. Kimi K2.6 also did not separate from Sonnet and has
+# the best reuse rate, so it is the fallback when the primary cannot answer.
+DEFAULT_MODEL = "dashscope:qwen3.8-flash"
+FALLBACK_MODEL = "moonshot:kimi-k2.6"
 
 # Shorthands, so you can A/B with `--model haiku` instead of the full id.
 MODEL_ALIASES = {
@@ -191,6 +198,47 @@ def build_system(words: list[str]) -> list[SystemBlock]:
     ]
 
 
+class GenerationError(Exception):
+    """A generation failed, with enough structure for a UI to show it usefully."""
+
+    def __init__(
+        self, kind: str, provider: str, model: str, message: str, also: str = ""
+    ):
+        super().__init__(message)
+        self.kind = kind
+        self.provider = provider
+        self.model = model
+        self.message = message
+        # The other provider that failed first, when a fallback was attempted.
+        self.also = also
+
+    @property
+    def title(self) -> str:
+        return f"{self.also} + {self.provider}" if self.also else self.provider
+
+    def as_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "provider": self.provider,
+            "model": self.model,
+            "message": self.message,
+            "also": self.also,
+            "title": self.title,
+        }
+
+
+@dataclass
+class Outcome:
+    """What a generation produced, plus how it got there."""
+
+    result: "Generation"
+    usage: object
+    model: str
+    effort: str | None
+    # Set when the primary model could not answer and the fallback was used.
+    fell_back_from: "GenerationError | None" = None
+
+
 def generate(
     word: str,
     words: list[str],
@@ -200,18 +248,59 @@ def generate(
     avoid: list[str] | None = None,
     effort: str | None = None,
     kept: list[dict] | None = None,
-) -> tuple[Generation, object, str, str | None]:
-    """Return the parsed generation, usage, the model spec, and the effort used."""
+    allow_fallback: bool = True,
+) -> Outcome:
+    """Generate candidates, falling back to a second model if the first cannot.
+
+    The fallback is never silent: the failure that caused it is carried on the
+    Outcome so the caller can show what went wrong. A card you can use plus a
+    visible warning beats a bare error, and beats a card that quietly came from
+    somewhere else.
+    """
     spec = resolve_model(model)
+    try:
+        return _generate_once(spec, word, words, n, prefer, avoid, effort, kept)
+    except GenerationError as primary:
+        fallback = resolve_model(FALLBACK_MODEL)
+        chose_explicitly = model is not None
+        if (
+            not allow_fallback
+            or chose_explicitly  # an explicit --model is an instruction, not a hint
+            or spec == fallback
+            or primary.kind == "not_found"  # a typo will not be fixed by another vendor
+            or not available(split_spec(fallback)[0])
+        ):
+            raise
+        try:
+            outcome = _generate_once(fallback, word, words, n, prefer, avoid, effort, kept)
+        except GenerationError as secondary:
+            # Both failed. Reporting only the second would point at the wrong
+            # provider — the fallback was never the one you asked for.
+            raise GenerationError(
+                secondary.kind,
+                secondary.provider,
+                secondary.model,
+                f"{primary.provider} failed, and so did the fallback.\n\n"
+                f"{primary.provider} ({primary.kind}): {primary.message}\n\n"
+                f"{secondary.provider} ({secondary.kind}): {secondary.message}",
+                also=primary.provider,
+            ) from None
+        outcome.fell_back_from = primary
+        return outcome
+
+
+def _generate_once(
+    spec, word, words, n, prefer, avoid, effort, kept
+) -> Outcome:
     provider_name, model_id = split_spec(spec)
     cfg = config_for(provider_name)
     effort = resolve_effort(effort) if supports_effort(spec) else None
 
     if not available(provider_name):
-        raise SystemExit(
-            f"No credentials for provider {provider_name!r}.\n"
-            f"Set {cfg.key_env} (or VOCAB_{provider_name.upper()}_API_KEY) in your .env.\n"
-            "(Extraction still works without it: try `vocab --list-words`.)"
+        raise GenerationError(
+            "auth", provider_name, model_id,
+            f"No credentials for {provider_name}.\n"
+            f"Set {cfg.key_env} (or VOCAB_{provider_name.upper()}_API_KEY) in your .env.",
         )
 
     provider = build(provider_name)
@@ -229,21 +318,25 @@ def generate(
             ),
         )
     except ProviderError as exc:
-        raise SystemExit(str(exc)) from None
+        raise GenerationError("other", provider_name, model_id, str(exc)) from None
     except Exception as exc:  # every vendor SDK raises its own hierarchy
-        raise SystemExit(_explain(provider_name, model_id, exc)) from None
+        raise GenerationError(
+            classify(exc), provider_name, model_id, _explain(provider_name, model_id, exc)
+        ) from None
 
     if completion.parsed is None:
         if completion.stop_reason in ("max_tokens", "length"):
-            raise SystemExit(
+            raise GenerationError(
+                "other", provider_name, model_id,
                 f"Ran out of output budget at effort={effort!r} before the model "
-                "finished. Retry at a lower effort."
+                "finished. Retry at a lower effort.",
             )
-        raise SystemExit(
+        raise GenerationError(
+            "other", provider_name, model_id,
             f"{provider_name} returned no usable structured output "
-            f"(stop_reason={completion.stop_reason}, mode={completion.structured})."
+            f"(stop_reason={completion.stop_reason}, mode={completion.structured}).",
         )
-    return completion.parsed, completion.usage, spec, effort
+    return Outcome(completion.parsed, completion.usage, spec, effort)
 
 
 RATE_LIMIT_RETRIES = 5
@@ -281,8 +374,18 @@ def _with_retries(provider: str, model: str, call):
     raise RuntimeError("unreachable")
 
 
+
+
 def _explain(provider: str, model: str, exc: Exception) -> str:
     """Turn a vendor exception into something worth reading."""
+    if isinstance(exc, ImportError):
+        return (
+            f"A Python package needed for {provider} is missing: {exc}.\n"
+            "If you installed the CLI with `uv tool install`, reinstall it after a "
+            "dependency change:\n"
+            "  uv tool install --editable --force ~/deuxcoast/vocab-gen"
+        )
+
     name = type(exc).__name__
     status = getattr(exc, "status_code", None)
     cfg = config_for(provider)

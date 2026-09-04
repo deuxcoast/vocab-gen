@@ -27,13 +27,21 @@ class FakeResult:
     ]
 
 
+class _Usage:
+    input_tokens = output_tokens = cache_read = cache_write = 0
+    cache_read_input_tokens = cache_creation_input_tokens = 0
+
+
 def stub_generate(result):
     """Match generate()'s signature in one place, so it drifts in one place."""
 
     def _stub(
-        word, words, n=3, model=None, prefer=None, avoid=None, effort=None, kept=None
+        word, words, n=3, model=None, prefer=None, avoid=None, effort=None,
+        kept=None, allow_fallback=True,
     ):
-        return result, None, "test-model", "low"
+        from vocab_gen.generate import Outcome
+
+        return Outcome(result, _Usage(), "test-model", "low")
 
     return _stub
 
@@ -139,3 +147,35 @@ def test_choose_records_the_kept_candidate(client, tmp_path):
 def test_giveaway_is_surfaced_to_the_page(client):
     _, data = _post(client + "/api/generate", {"word": "nexus", "n": 1})
     assert "giveaway" in data["candidates"][0]
+
+
+def test_api_errors_reach_the_page_with_their_kind(client, monkeypatch):
+    """A single-user tool should show what broke, not hide it."""
+    from vocab_gen.generate import GenerationError
+
+    def boom(*a, **kw):
+        raise GenerationError("balance", "dashscope", "qwen3.8-flash", "Out of credit.")
+
+    monkeypatch.setattr("vocab_gen.generate.generate", boom)
+    status, data = _post(client + "/api/generate", {"word": "nexus", "n": 1})
+    assert status == 502
+    assert data["kind"] == "balance"
+    assert data["provider"] == "dashscope"
+    assert "Out of credit." in data["error"]
+
+
+def test_a_fallback_is_reported_to_the_page(client, monkeypatch):
+    from vocab_gen.generate import GenerationError, Outcome
+
+    def fell_back(*a, **kw):
+        out = Outcome(FakeResult(), _Usage(), "moonshot:kimi-k2.6", "low")
+        out.fell_back_from = GenerationError(
+            "rate_limit", "dashscope", "qwen3.8-flash", "Rate limited."
+        )
+        return out
+
+    monkeypatch.setattr("vocab_gen.generate.generate", fell_back)
+    status, data = _post(client + "/api/generate", {"word": "nexus", "n": 1})
+    assert status == 200
+    assert data["fell_back_from"]["provider"] == "dashscope"
+    assert data["fell_back_from"]["kind"] == "rate_limit"

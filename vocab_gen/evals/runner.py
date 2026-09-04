@@ -90,11 +90,12 @@ def run(
         for case in cases:
             started = time.perf_counter()
             try:
-                result, usage, used, _effort = generate(
+                outcome = generate(
                     case.word, words, n=n_candidates, model=spec,
-                    prefer=prefer, avoid=avoid, kept=[],
+                    prefer=prefer, avoid=avoid, kept=[], allow_fallback=False,
                 )
-            except SystemExit as exc:
+                result, usage, used = outcome.result, outcome.usage, outcome.model
+            except Exception as exc:
                 on_event("error", spec, case.word, str(exc).splitlines()[0])
                 rows.append(_error_row(run_id, spec, case, str(exc).splitlines()[0]))
                 continue

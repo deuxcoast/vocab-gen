@@ -25,6 +25,43 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 
+# What went wrong, in terms worth acting on rather than an HTTP number.
+FAILURE_KINDS = (
+    "auth", "balance", "rate_limit", "not_found", "connection", "setup", "other",
+)
+
+
+def classify(exc: Exception) -> str:
+    """Map a vendor exception onto one of FAILURE_KINDS."""
+    # Checked before anything else: ModuleNotFoundError contains the substring
+    # "NotFound", and once read that way a missing Python package is reported as
+    # a missing *model*, sending you to the vendor's docs over a broken install.
+    if isinstance(exc, ImportError):
+        return "setup"
+
+    name = type(exc).__name__
+    status = getattr(exc, "status_code", None)
+    body = str(exc).lower()
+
+    if any(
+        phrase in body
+        for phrase in ("insufficient balance", "no resource package", "recharge",
+                       "arrears", "billing", "quota exceeded", "out of credit")
+    ) or status == 402:
+        return "balance"
+    if status == 401 or status == 403 or "authentication" in name.lower() or (
+        "api key" in body and ("invalid" in body or "expired" in body)
+    ):
+        return "auth"
+    if status == 429 or "ratelimit" in name.lower():
+        return "rate_limit"
+    if status == 404 or "notfound" in name.lower():
+        return "not_found"
+    if "connection" in name.lower() or "timeout" in name.lower():
+        return "connection"
+    return "other"
+
+
 class ProviderError(RuntimeError):
     """A provider failed in a way worth reporting but not crashing over."""
 

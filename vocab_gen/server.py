@@ -12,6 +12,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .collection import extract_vocab
+from .generate import GenerationError
 from .history import History
 from .render import back_html, prepare
 
@@ -64,6 +65,13 @@ PAGE = """<!doctype html>
   .reuse { font-size: .82rem; color: var(--ok); font-family: ui-monospace, monospace; }
   .reuse.none { color: var(--muted); }
   .giveaway { font-size: .82rem; color: #b4462f; font-family: ui-monospace, monospace; margin-top: .2rem; }
+  .alert { border: 1px solid #b4462f; border-radius: 10px; padding: .9rem 1.1rem;
+           margin-bottom: 1rem; background: color-mix(in srgb, #b4462f 8%, transparent); }
+  .alert h3 { margin: 0 0 .35rem; font-size: .95rem; color: #b4462f; }
+  .alert pre { margin: 0; white-space: pre-wrap; font: .82rem/1.5 ui-monospace, monospace;
+               color: var(--fg); }
+  .alert.warn { border-color: #a9761f; background: color-mix(in srgb, #a9761f 8%, transparent); }
+  .alert.warn h3 { color: #a9761f; }
   @media (prefers-color-scheme: dark) { .giveaway { color: #e08a70; } }
   .row { display: flex; gap: .4rem; margin-top: .8rem; flex-wrap: wrap; }
   .row button { padding: .35rem .6rem; font-size: .8rem; border-radius: 6px; }
@@ -94,6 +102,22 @@ PAGE = """<!doctype html>
 
 <script>
 const $ = s => document.querySelector(s);
+let lastErrorTitle = '';
+const KIND = {
+  auth: 'API key rejected', balance: 'out of credit', rate_limit: 'rate limited',
+  not_found: 'no such model', connection: 'cannot reach the API', other: 'failed',
+};
+
+function showAlert(level, title, body) {
+  const box = document.createElement('div');
+  box.className = 'alert' + (level === 'warn' ? ' warn' : '');
+  const h = document.createElement('h3');
+  h.textContent = title;
+  const pre = document.createElement('pre');
+  pre.textContent = body;
+  box.appendChild(h); box.appendChild(pre);
+  $('#out').prepend(box);
+}
 
 fetch('/api/words').then(r => r.json()).then(d => { $('#count').textContent = d.count; });
 
@@ -194,11 +218,22 @@ $('#f').onsubmit = async e => {
       body: JSON.stringify({word, n: Number($('#n').value)}),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'request failed');
+    if (!res.ok) {
+      const who = data.title || data.provider;
+      lastErrorTitle = who
+        ? `${who} — ${data.also ? 'both failed' : (KIND[data.kind] || data.kind || 'failed')}`
+        : 'Request failed';
+      throw new Error(data.error || 'request failed');
+    }
     $('#status').textContent = '';
+    if (data.fell_back_from) {
+      const f = data.fell_back_from;
+      showAlert('warn', `${f.provider} — ${KIND[f.kind] || f.kind}; used ${data.model} instead`, f.message);
+    }
     render(data);
   } catch (err) {
-    $('#status').textContent = String(err.message || err);
+    $('#status').textContent = '';
+    showAlert('error', lastErrorTitle || 'Request failed', String(err.message || err));
   } finally {
     $('#go').disabled = false;
   }
@@ -273,7 +308,7 @@ def _handler(deck, profile, model=None, effort=None):
 
                 history = History.load()
                 prefer, avoid = history.plan(vocab)
-                result, _usage, used, used_effort = generate(
+                outcome = generate(
                     word,
                     words,
                     n=n,
@@ -283,6 +318,8 @@ def _handler(deck, profile, model=None, effort=None):
                     effort=effort,
                     kept=history.recent_kept(),
                 )
+                result = outcome.result
+                used, used_effort = outcome.model, outcome.effort
                 cands = prepare(result, word, words)
                 for c in cands:
                     history.record(c["reused"])
@@ -293,13 +330,22 @@ def _handler(deck, profile, model=None, effort=None):
                     {
                         "word": word,
                         "model": used + (f"/{used_effort}" if used_effort else ""),
+                        "fell_back_from": (
+                            outcome.fell_back_from.as_dict()
+                            if outcome.fell_back_from is not None
+                            else None
+                        ),
                         "part_of_speech": result.part_of_speech,
                         "definition": result.definition,
                         "back_html": back_html(result.definition),
                         "candidates": cands,
                     },
                 )
-            except SystemExit as exc:  # missing credentials
+            except GenerationError as exc:
+                # Surfaced in full: this is a single-user tool, and a hidden
+                # failure is worse than a visible one.
+                self._json(502, {"error": exc.message, **exc.as_dict()})
+            except SystemExit as exc:
                 self._json(500, {"error": str(exc)})
             except Exception as exc:
                 self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
