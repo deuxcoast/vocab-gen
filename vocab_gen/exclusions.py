@@ -1,0 +1,96 @@
+"""Words held back from the prompt.
+
+Some cards are worth keeping in a deck but not worth putting in front of a model
+as a word to reuse. Slurs are the clear case: a generated sentence containing
+one is not a card anyone wants, however correct the usage. So are words that are
+not slurs but are routinely mistaken for them — "niggardly" is unrelated in
+origin to any slur, and a sentence built around it invites exactly the
+misreading the learner does not need.
+
+This filters the known-word list sent to the model. It does **not** filter the
+deck, and it does not stop you generating a card *for* one of these words: if
+you ask for "niggardly" as a target you get it. The rule is about what the tool
+volunteers, not about what you may study.
+
+A secondary effect worth knowing: providers run safety classifiers over the
+whole request, and an 800-word list containing a slur scores higher than one
+without. On Alibaba this was enough to push some prompts over the threshold.
+That is a reason to prefer excluding them, not the reason.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+# Kept deliberately short. This is not an attempt to enumerate every slur — it
+# covers what has turned up plus the obvious neighbours, and the user file below
+# is the way to extend it.
+DEFAULT_EXCLUSIONS = frozenset(
+    {
+        # Present in the deck when this was written.
+        "maricón",
+        "maricon",
+        "jigaboo",
+        "niggardly",
+        # Not slurs, but read as them often enough to be unusable in an example.
+        "niggling",
+        "gypped",
+        "welshed",
+        # Ethnic and racial slurs.
+        "coon",
+        "wetback",
+        "gook",
+        "kike",
+        "spic",
+        "chink",
+        "dago",
+        "wop",
+        "squaw",
+        "redskin",
+        "negress",
+        "mulatto",
+        "octoroon",
+        "quadroon",
+        "half-caste",
+        # Slurs for sexuality and gender.
+        "faggot",
+        "tranny",
+        "shemale",
+        "catamite",
+        # Slurs for disability.
+        "retard",
+        "retarded",
+        "mongoloid",
+        "spastic",
+        "cretin",
+    }
+)
+
+
+def user_file() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "vocab-gen" / "excluded.txt"
+
+
+def load(path: Path | None = None) -> frozenset[str]:
+    """Defaults plus anything in the user's list. Additive, never subtractive.
+
+    One word per line; blank lines and lines starting with # are ignored.
+    """
+    path = Path(path) if path is not None else user_file()
+    extra: set[str] = set()
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            word = line.split("#", 1)[0].strip().lower()
+            if word:
+                extra.add(word)
+    except (FileNotFoundError, OSError):
+        pass
+    return frozenset(DEFAULT_EXCLUSIONS | extra)
+
+
+def is_excluded(term: str, excluded: frozenset[str] | None = None) -> bool:
+    excluded = load() if excluded is None else excluded
+    return term.strip().lower() in excluded

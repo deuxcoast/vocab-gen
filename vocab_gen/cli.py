@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .collection import extract_vocab
+from .collection import extract_vocab, held_back
 from .env import load_env
 from .history import History
 from .providers import PROVIDERS, available, why_unavailable
@@ -182,6 +182,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_words:
         for w in words:
             print(w)
+        withheld = held_back(deck=args.deck, profile=args.profile)
+        if withheld:
+            print(
+                f"\n({len(withheld)} held back from prompts: {', '.join(withheld)})",
+                file=sys.stderr,
+            )
         return 0
 
     if args.check:
@@ -192,6 +198,9 @@ def main(argv: list[str] | None = None) -> int:
         pct = 100 * cov["seen"] / cov["deck"] if cov["deck"] else 0
         print(f"  {cov['seen']} of {cov['deck']} deck words have appeared ({pct:.1f}%)")
         print(f"  {cov['unseen']} never used · {cov['uses']} reuses recorded")
+        withheld = held_back(deck=args.deck, profile=args.profile)
+        if withheld:
+            print(f"  {len(withheld)} held back from prompts: {', '.join(withheld)}")
         shaky = sorted(vocab, key=lambda w: -w.shakiness)[:5]
         print("\n  shakiest words in your deck (lapses / interval):")
         for w in shaky:
