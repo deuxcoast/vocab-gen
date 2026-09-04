@@ -30,7 +30,10 @@ def _print_result(word, result, cands, model, effort, color: bool) -> None:
         print(s(f"  {i}.", "1;33"), c["sentence"])
         print(s(f"     {c['front_html']}", "2"))
         if c["reused"]:
-            print(s(f"     reuses: {', '.join(c['reused'])}", "32"))
+            note = ", ".join(c["reused"])
+            if c.get("unclaimed"):
+                note += f"  (unreported by the model: {', '.join(c['unclaimed'])})"
+            print(s(f"     reuses: {note}", "32"))
         else:
             print(s("     reuses: nothing (no natural fit)", "2"))
         if c["missing_target"]:

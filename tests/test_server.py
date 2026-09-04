@@ -179,3 +179,72 @@ def test_a_fallback_is_reported_to_the_page(client, monkeypatch):
     assert status == 200
     assert data["fell_back_from"]["provider"] == "dashscope"
     assert data["fell_back_from"]["kind"] == "rate_limit"
+
+
+def test_send_creates_a_note(client, monkeypatch):
+    from vocab_gen import anki
+
+    calls = {}
+    monkeypatch.setattr(anki, "is_duplicate", lambda f, b: False)
+    monkeypatch.setattr(
+        anki, "add_note",
+        lambda f, b, allow_duplicate=False: calls.update(front=f, back=b) or 99,
+    )
+    status, data = _post(
+        client + "/api/send",
+        {"front": "<i><u>x</u></i>", "back": "<ul><li>d</li></ul>", "word": "x"},
+    )
+    assert status == 200 and data["note_id"] == 99
+    assert calls["front"] == "<i><u>x</u></i>"
+
+
+def test_send_reports_a_duplicate_rather_than_creating_one(client, monkeypatch):
+    from vocab_gen import anki
+
+    monkeypatch.setattr(anki, "is_duplicate", lambda f, b: True)
+    monkeypatch.setattr(anki, "add_note", lambda *a, **kw: pytest.fail("must not add"))
+    status, data = _post(client + "/api/send", {"front": "f", "back": "b", "word": "x"})
+    assert status == 409 and data["duplicate"] is True
+
+
+def test_send_anyway_overrides_the_duplicate_check(client, monkeypatch):
+    from vocab_gen import anki
+
+    seen = {}
+    monkeypatch.setattr(anki, "is_duplicate", lambda f, b: True)
+    monkeypatch.setattr(
+        anki, "add_note",
+        lambda f, b, allow_duplicate=False: seen.update(allow=allow_duplicate) or 7,
+    )
+    status, data = _post(
+        client + "/api/send",
+        {"front": "f", "back": "b", "word": "x", "allow_duplicate": True},
+    )
+    assert status == 200 and seen["allow"] is True
+
+
+def test_send_records_the_card_as_kept(client, tmp_path, monkeypatch):
+    from vocab_gen import anki
+
+    monkeypatch.setattr(anki, "is_duplicate", lambda f, b: False)
+    monkeypatch.setattr(anki, "add_note", lambda f, b, allow_duplicate=False: 1)
+    _post(client + "/api/send",
+          {"front": "f", "back": "b", "word": "nexus", "sentence": "s", "reused": ["strait"]})
+    kept = History.load(tmp_path / "u.json").recent_kept()
+    assert kept and kept[-1]["target"] == "nexus"
+
+
+def test_send_with_anki_closed_explains_itself(client, monkeypatch):
+    from vocab_gen import anki
+
+    def closed(*a, **kw):
+        raise anki.AnkiError("Could not reach AnkiConnect. Anki has to be running.")
+
+    monkeypatch.setattr(anki, "is_duplicate", closed)
+    status, data = _post(client + "/api/send", {"front": "f", "back": "b"})
+    assert status == 502 and "running" in data["error"]
+
+
+def test_send_rejects_an_empty_front(client):
+    status, data = _post(client + "/api/send", {"front": "  ", "back": "b"})
+    assert status == 400

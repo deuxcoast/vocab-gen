@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from ..morphology import match_span
 from ..render import (
+    detect_reuse,
     gives_away_answer,
     strip_markdown,
     unknown_claims,
-    verified_reuse,
     wrong_sense,
 )
 
@@ -25,7 +25,10 @@ def grade_candidate(
 ) -> dict:
     sentence = strip_markdown(candidate.sentence)
     surface = strip_markdown(candidate.surface_form)
-    verified = verified_reuse(sentence, candidate.reused, deck)
+    # Detected, not claimed: a model reuses words it does not report, and
+    # measuring its self-report understates what the sentence actually does.
+    matches = detect_reuse(sentence, deck, word)
+    verified = [m.term for m in matches]
     invented = unknown_claims(candidate.reused, deck)
     giveaway = gives_away_answer(sentence, definition, word)
     present = match_span(sentence, word) or match_span(sentence, surface)
@@ -37,6 +40,9 @@ def grade_candidate(
         "has_target": present is not None,
         "claimed": len(candidate.reused),
         "verified": len(verified),
+        "unreported": len(
+            [t for t in verified if not any(r.lower() == t.lower() for r in candidate.reused)]
+        ),
         "reused": verified,
         "no_invented_reuse": not invented,
         "invented": invented,

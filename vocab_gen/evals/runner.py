@@ -46,6 +46,7 @@ class Row:
     has_target: bool
     claimed: int
     verified: int
+    unreported: int
     reused: list
     no_invented_reuse: bool
     invented: list
@@ -128,7 +129,7 @@ def run(
                             cost=(cost / len(result.candidates)) if cost is not None else None,
                             **{k: g[k] for k in (
                                 "sentence", "words", "has_target", "claimed", "verified",
-                                "reused", "no_invented_reuse", "invented", "gives_away",
+                                "unreported", "reused", "no_invented_reuse", "invented", "gives_away",
                                 "giveaway_words", "wrong_sense", "usable")},
                         )
                     )
@@ -175,7 +176,7 @@ def _error_row(run_id: str, model: str, variant: str, case: Case, error: str) ->
     return Row(
         run_id=run_id, model=model, variant=variant, word=case.word, pos=case.pos,
         register=case.register, index=0, sentence="", words=0, has_target=False,
-        claimed=0, verified=0, reused=[], no_invented_reuse=True, invented=[],
+        claimed=0, verified=0, unreported=0, reused=[], no_invented_reuse=True, invented=[],
         gives_away=False, giveaway_words=[], wrong_sense="", usable=False, latency=0.0,
         input_tokens=0, output_tokens=0, cache_read=0, cost=None, error=error,
     )

@@ -157,8 +157,15 @@ for m in haiku sonnet opus; do uv run vocab --model $m --usage perspicacious; do
 The `reuses:` line is the thing to judge. If a model claims a pairing that reads as bolted
 together, that's the tell.
 
-The web interface is the nicer way to add several cards in a sitting: type a word, read the
-candidates rendered as they'll look on the card, and hit **Copy front** / **Copy back**.
+The web interface is the nicer way to add several cards in a sitting: type a word, pick a
+candidate with **1-9** or by clicking it, and press **return** to send it straight to Anki —
+deck `General`, note type `code-article`, tagged `vocab-gen` so anything the tool created can
+be found or removed with a single search. Duplicates are reported rather than created, with a
+**Send anyway** button for the legitimate second-sense case. **Copy front** / **Copy back**
+are still there if you would rather paste by hand.
+
+On the card front the target word is underlined and italic, and any deck words the sentence
+reused are italic — so the connection is visible while reviewing.
 
 ## How it finds your existing words
 

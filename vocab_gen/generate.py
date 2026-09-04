@@ -24,12 +24,20 @@ from .providers import (
     config_for,
 )
 
-# Measured over 234 candidates: Qwen3.8-Flash is statistically indistinguishable
-# from Claude Sonnet 5 on judged quality and costs $0.011 per 100 accepted cards
-# against Sonnet's $0.293. Kimi K2.6 also did not separate from Sonnet and has
-# the best reuse rate, so it is the fallback when the primary cannot answer.
-DEFAULT_MODEL = "dashscope:qwen3.8-flash"
-FALLBACK_MODEL = "moonshot:kimi-k2.6"
+# Measured over 240 candidates on forty words. Kimi K2.6 with the balanced-reuse
+# prompt reuses a deck word in 78% of sentences against Qwen's 40%, at judged
+# quality that does not separate from Claude Sonnet 5, for $0.241 per 100
+# accepted cards against Sonnet's $0.293. Reuse is the point of the deck, so it
+# is worth the 22x over Qwen — which is 22x of a fifth of a cent.
+#
+# The prompt matters as much as the model here: the balanced variant costs Qwen
+# 0.458 naturalness (real) and Kimi nothing (noise). Kimi follows the more
+# demanding instruction; Qwen needs the escape clause. So the fallback keeps the
+# baseline prompt, since it runs on Qwen.
+DEFAULT_MODEL = "moonshot:kimi-k2.6"
+DEFAULT_VARIANT = "balanced-reuse"
+FALLBACK_MODEL = "dashscope:qwen3.8-flash"
+FALLBACK_VARIANT = "baseline"
 
 # Shorthands, so you can A/B with `--model haiku` instead of the full id.
 MODEL_ALIASES = {
@@ -218,7 +226,10 @@ def generate(
     """
     spec = resolve_model(model)
     try:
-        return _generate_once(spec, word, words, n, prefer, avoid, effort, kept, variant)
+        return _generate_once(
+            spec, word, words, n, prefer, avoid, effort, kept,
+            variant if variant is not None else DEFAULT_VARIANT,
+        )
     except GenerationError as primary:
         fallback = resolve_model(FALLBACK_MODEL)
         chose_explicitly = model is not None
@@ -231,8 +242,11 @@ def generate(
         ):
             raise
         try:
+            # The fallback runs on a different model, which needs a different
+            # prompt: the balanced variant measurably degrades Qwen.
             outcome = _generate_once(
-                fallback, word, words, n, prefer, avoid, effort, kept, variant
+                fallback, word, words, n, prefer, avoid, effort, kept,
+                variant if variant is not None else FALLBACK_VARIANT,
             )
         except GenerationError as secondary:
             # Both failed. Reporting only the second would point at the wrong

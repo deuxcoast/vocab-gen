@@ -35,6 +35,8 @@ class Token:
     lemma: str
     pos: str
     is_stop: bool
+    start: int = 0  # character offsets, so matches can be marked up in place
+    end: int = 0
 
     @property
     def keys(self) -> frozenset[str]:
@@ -74,7 +76,9 @@ def analyze(text: str) -> tuple[Token, ...]:
     """Tokens of `text`, with lemma and part of speech. Cached: sentences repeat."""
     doc = _nlp()(text)
     return tuple(
-        Token(t.text, t.lemma_, t.pos_, t.is_stop) for t in doc if not t.is_punct and not t.is_space
+        Token(t.text, t.lemma_, t.pos_, t.is_stop, t.idx, t.idx + len(t.text))
+        for t in doc
+        if not t.is_punct and not t.is_space
     )
 
 
@@ -159,3 +163,60 @@ def phrase_keys(term: str) -> tuple[frozenset[str], ...]:
 
 
 _LEGACY_TOKEN = re.compile(r"[^\W\d_]+(?:[-'’][^\W\d_]+)*", re.UNICODE)
+
+
+@dataclass(frozen=True)
+class Match:
+    term: str  # the deck's own spelling
+    text: str  # what actually appears in the sentence
+    start: int
+    end: int
+
+
+def build_index(deck) -> dict:
+    """Map a first-token key to the deck terms that could start with it.
+
+    Scanning 800 terms against every sentence one at a time is wasteful; this
+    turns the scan into a lookup on each sentence token instead.
+    """
+    index: dict[str, list[tuple[str, tuple]]] = {}
+    for term in deck:
+        keys = tuple(_keys(term))
+        if not keys:
+            continue
+        for first in keys[0]:
+            index.setdefault(first, []).append((term, keys))
+    return index
+
+
+def find_all(sentence: str, deck, index: dict | None = None) -> list[Match]:
+    """Every deck word actually present in the sentence.
+
+    The point of scanning the whole deck rather than a list of claims: a model
+    reuses words it does not report. Asking it what it used measures its
+    self-report, not the sentence.
+    """
+    index = build_index(deck) if index is None else index
+    tokens = analyze(sentence)
+    found: list[Match] = []
+    taken: set[int] = set()
+
+    for i, token in enumerate(tokens):
+        if i in taken:
+            continue
+        candidates = []
+        for key in token.keys:
+            candidates.extend(index.get(key, ()))
+        # Longest match first, so "sluice gates" beats a bare "gates".
+        for term, keys in sorted(candidates, key=lambda c: -len(c[1])):
+            span = len(keys)
+            if i + span > len(tokens) or any(j in taken for j in range(i, i + span)):
+                continue
+            window = tokens[i : i + span]
+            if all(w.keys & k for w, k in zip(window, keys)):
+                found.append(
+                    Match(term, " ".join(w.text for w in window), window[0].start, window[-1].end)
+                )
+                taken.update(range(i, i + span))
+                break
+    return found
