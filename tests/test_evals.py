@@ -477,3 +477,32 @@ def test_the_variants_own_oversampling_reaches_generate(monkeypatch):
     )
     gen.generate("x", ["y"], n=3, variant=get("baseline-os2"))
     assert seen["n"] == 6, "variant oversampling must reach the request"
+
+
+def test_oversampled_selection_survives_markdown(monkeypatch, tmp_path):
+    """prepare() strips markdown, so selecting by sentence text silently drops
+    any candidate the model emphasised."""
+    from vocab_gen.generate import Outcome
+
+    def fake_generate(word, words, n=3, oversample=1, **kw):
+        cands = [
+            cand("The **obdurate** judge spoke first.", "obdurate"),
+            cand("The obdurate judge spoke second.", "obdurate"),
+            cand("The obdurate judge spoke third.", "obdurate"),
+            cand("The obdurate judge spoke fourth.", "obdurate"),
+            cand("The obdurate judge spoke fifth.", "obdurate"),
+            cand("The obdurate judge spoke sixth.", "obdurate"),
+        ]
+        return Outcome(
+            types.SimpleNamespace(definition=["d"], part_of_speech="adjective",
+                                  candidates=cands),
+            types.SimpleNamespace(input_tokens=1, output_tokens=1,
+                                  cache_read_input_tokens=0,
+                                  cache_creation_input_tokens=0),
+            "m", "low",
+        )
+
+    monkeypatch.setattr(runner, "generate", fake_generate)
+    monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
+    _id, rows = runner.run(["m"], variants=["baseline-os2"], n_cases=1, judge_model=None)
+    assert len(rows) == 3, "all three selected candidates must survive"

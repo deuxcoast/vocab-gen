@@ -122,13 +122,16 @@ def run(
                 # what a user would actually be shown rather than the raw pool.
                 shown = result.candidates
                 if factor > 1:
-                    keep = {
-                        c["sentence"]
-                        for c in rank_candidates(
-                            prepare(result, case.word, words), n_candidates
-                        )
-                    }
-                    shown = [c for c in result.candidates if c.sentence in keep][:n_candidates]
+                    # Match on position, not on sentence text: prepare() strips
+                    # markdown, so comparing strings silently fails for any
+                    # candidate the model emphasised, and drops it from the run.
+                    prepared = prepare(result, case.word, words)
+                    order = {id(p): i for i, p in enumerate(prepared)}
+                    keep = [
+                        order[id(p)]
+                        for p in rank_candidates(prepared, n_candidates)
+                    ]
+                    shown = [result.candidates[i] for i in sorted(keep)]
 
                 for i, cand in enumerate(shown):
                     g = grade_candidate(
