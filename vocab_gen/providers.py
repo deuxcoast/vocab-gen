@@ -80,13 +80,17 @@ class ProviderConfig:
     # Whether response_format supports a real JSON *schema*, not just "some JSON".
     json_schema: bool = True
     # How reasoning depth is expressed, if at all.
-    reasoning: str | None = None  # None | "openai_effort" | "qwen_thinking"
+    # None | "openai_effort" | "qwen_thinking" | "zhipu_thinking" | "anthropic_effort"
+    reasoning: str | None = None
     # Explicit cache_control markers, vs. automatic prefix caching server-side.
     explicit_cache: bool = False
     default_model: str = ""
     notes: str = ""
     # True when the endpoint is account-specific and cannot be defaulted.
     needs_base_url: bool = False
+    # Vendor and product names diverge (Zhipu/GLM, Alibaba/DashScope/Qwen), so
+    # accept whichever the user reached for.
+    key_aliases: tuple[str, ...] = ()
 
 
 PROVIDERS: dict[str, ProviderConfig] = {
@@ -120,6 +124,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         kind="openai",
         base_url="https://api.moonshot.ai/v1",
         key_env="MOONSHOT_API_KEY",
+        key_aliases=("KIMI_API_KEY",),
         json_schema=True,
         default_model="kimi-k2.6",
         notes=(
@@ -134,21 +139,27 @@ PROVIDERS: dict[str, ProviderConfig] = {
         kind="openai",
         base_url="https://api.z.ai/api/paas/v4",
         key_env="ZHIPUAI_API_KEY",
-        json_schema=True,
-        default_model="glm-5.3-flash",
+        key_aliases=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        # glm-4.7-flash accepts response_format=json_schema and then ignores it,
+        # returning prose. Ask for json_object and inline the schema instead.
+        json_schema=False,
+        reasoning="zhipu_thinking",
+        default_model="glm-4.7-flash",
         notes=(
             "GLM. Mainland endpoint is open.bigmodel.cn/api/paas/v4. "
-            "glm-4.7-flash and glm-4.5-flash are free — the cheapest way to run "
-            "the spike. GLM-5.2 weights are MIT."
+            "Defaults to the free glm-4.7-flash; the 5.x models need account "
+            "balance. Note glm-4.7-flash reasons heavily (~300 tokens for one "
+            "sentence), so give it output headroom. GLM-5.2 weights are MIT."
         ),
     ),
     "dashscope": ProviderConfig(
         name="dashscope",
         kind="openai",
-        # Workspace-scoped now, so there is no usable default to hardcode.
-        base_url=None,
-        needs_base_url=True,
+        # Docs describe a workspace-scoped host, but the legacy shared endpoint
+        # still answers for many accounts. Try it and let the error say otherwise.
+        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         key_env="DASHSCOPE_API_KEY",
+        key_aliases=("QWEN_API_KEY", "ALIBABA_API_KEY"),
         json_schema=True,  # strict schema confirmed on 3.7/3.8 series
         reasoning="qwen_thinking",
         default_model="qwen3.8-flash",
@@ -164,6 +175,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
         kind="openai",
         base_url="https://api.minimax.chat/v1",
         key_env="MINIMAX_API_KEY",
+        key_aliases=("MINIMAXI_API_KEY",),
         json_schema=False,  # unverified; fallback path is safe
         default_model="MiniMax-M2.7",
         notes="Open weights. Host unverified — override if calls fail.",
@@ -207,7 +219,9 @@ MODEL_PRICING: dict[str, tuple[float, float, float]] = {
     "moonshot:kimi-k3": (3.00, 0.30, 15.00),
     "moonshot:kimi-k2.6": (0.95, 0.16, 4.00),
     "moonshot:kimi-k2.5": (0.60, 0.10, 3.00),
+    "moonshot:kimi-k2.7-code": (0.95, 0.19, 4.00),
     "dashscope:qwen3.8-max": (2.00, 0.25, 6.00),
+    "dashscope:qwen3.8-flash": (0.10, 0.0125, 0.40),
     "dashscope:qwen3.5-flash": (0.10, 0.0125, 0.40),
     "minimax:MiniMax-M2.7": (0.30, 0.06, 1.20),
 }
@@ -241,7 +255,12 @@ def config_for(provider: str) -> ProviderConfig:
 def api_key_for(cfg: ProviderConfig) -> str | None:
     if not cfg.key_env:
         return "not-needed"
-    return os.environ.get(f"VOCAB_{cfg.name.upper()}_API_KEY") or os.environ.get(cfg.key_env)
+    names = (f"VOCAB_{cfg.name.upper()}_API_KEY", cfg.key_env, *cfg.key_aliases)
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
 
 
 def available(provider: str) -> bool:
@@ -405,10 +424,7 @@ class OpenAICompatProvider:
         else:
             kwargs["response_format"] = {"type": "json_object"}
             structured = "json_object"
-            user = (
-                f"{user}\n\nReturn a single JSON object and nothing else, matching "
-                f"this schema exactly:\n{json.dumps(schema, ensure_ascii=False)}"
-            )
+            user = _with_schema(user, schema)
         kwargs.update(self._reasoning_kwargs(effort))
 
         response = client.chat.completions.create(
@@ -422,17 +438,30 @@ class OpenAICompatProvider:
         )
         choice = response.choices[0]
         text = choice.message.content or ""
+        parsed, error = self._parse(text, schema_model)
 
-        parsed = None
-        payload = extract_json(text)
-        if payload is not None:
-            try:
-                parsed = schema_model.model_validate(payload)
-            except ValidationError as exc:
-                raise ProviderError(
-                    f"{self.cfg.name}: returned JSON that does not match the schema "
-                    f"({exc.error_count()} errors)."
-                ) from None
+        # Capability flags cannot be trusted: some vendors accept a json_schema
+        # request and then ignore it. If schema mode produced nothing usable,
+        # fall back to json_object with the schema inlined and try once more.
+        retried = False
+        if parsed is None and self.cfg.json_schema:
+            retried = True
+            structured = "json_object (after schema ignored)"
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": system_text},
+                    {"role": "user", "content": _with_schema(user, schema)},
+                ],
+                **{**kwargs, "response_format": {"type": "json_object"}},
+            )
+            choice = response.choices[0]
+            text = choice.message.content or ""
+            parsed, error = self._parse(text, schema_model)
+
+        if parsed is None and error is not None:
+            raise ProviderError(error)
 
         u = getattr(response, "usage", None)
         cached = 0
@@ -443,15 +472,28 @@ class OpenAICompatProvider:
             parsed=parsed,
             text=text,
             usage=Usage(
-                input_tokens=(getattr(u, "prompt_tokens", 0) or 0) - cached,
+                input_tokens=max((getattr(u, "prompt_tokens", 0) or 0) - cached, 0),
                 output_tokens=getattr(u, "completion_tokens", 0) or 0,
                 cache_read=cached,
             ),
             model=model,
             effort=effort,
             stop_reason=choice.finish_reason,
-            structured=structured,
+            structured=structured if retried else structured,
         )
+
+    def _parse(self, text: str, schema_model):
+        """(parsed, error) — error only when JSON was found but did not fit."""
+        payload = extract_json(text)
+        if payload is None:
+            return None, None
+        try:
+            return schema_model.model_validate(payload), None
+        except ValidationError as exc:
+            return None, (
+                f"{self.cfg.name}: returned JSON that does not match the schema "
+                f"({exc.error_count()} errors)."
+            )
 
     def _reasoning_kwargs(self, effort: str | None) -> dict[str, Any]:
         if not effort or not self.cfg.reasoning:
@@ -462,7 +504,21 @@ class OpenAICompatProvider:
             return {"reasoning_effort": level}
         if self.cfg.reasoning == "qwen_thinking":
             return {"extra_body": {"enable_thinking": effort not in (None, "low")}}
+        if self.cfg.reasoning == "zhipu_thinking":
+            # Left on, GLM spends thousands of tokens reasoning about a sentence
+            # and can exhaust the whole budget before emitting any content.
+            state = "enabled" if effort not in (None, "low") else "disabled"
+            return {"extra_body": {"thinking": {"type": state}}}
         return {}
+
+
+def _with_schema(user: str, schema: dict[str, Any]) -> str:
+    """Without schema enforcement the shape has to travel in the prompt."""
+    return (
+        f"{user}\n\nReturn a single JSON object and nothing else, matching this "
+        f"schema exactly — use these field names verbatim:\n"
+        f"{json.dumps(schema, ensure_ascii=False)}"
+    )
 
 
 def _strictify(schema: dict[str, Any]) -> dict[str, Any]:

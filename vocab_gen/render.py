@@ -8,6 +8,29 @@ import re
 from .morphology import contains_form, stem, tokenize
 
 
+# Asterisk emphasis may sit inside a word; underscore emphasis may not — which
+# is what keeps snake_case_name intact. Markdown itself draws the same line.
+_MD_STAR = re.compile(r"(\*\*|\*)(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
+_MD_UNDERSCORE = re.compile(
+    r"(?<![A-Za-z0-9])(__|_)(?=\S)(.+?)(?<=\S)\1(?![A-Za-z0-9])", re.DOTALL
+)
+
+
+def strip_markdown(text: str) -> str:
+    """Remove markdown emphasis a model wrapped around words.
+
+    Some providers bold the target word or the reused vocabulary inside the
+    sentence itself. The prompt asks for plain text, but that cannot be relied
+    on across vendors, and literal asterisks would land on the card front.
+    """
+    previous = None
+    while previous != text:  # ***both*** needs two passes
+        previous = text
+        text = _MD_STAR.sub(r"\2", text)
+        text = _MD_UNDERSCORE.sub(r"\2", text)
+    return text
+
+
 def wrap_target(sentence: str, surface_form: str) -> str:
     """Underline+italicize the target inside the sentence, Anki-style.
 
@@ -111,13 +134,24 @@ def gives_away_answer(sentence: str, definition: list[str], target: str) -> list
 
 
 def prepare(result, word: str, deck: list[str]) -> list[dict]:
-    """Verify each candidate's reuse claims and check it doesn't hand over the meaning."""
-    return [
-        {
-            "sentence": c.sentence,
-            "front_html": wrap_target(c.sentence, c.surface_form),
-            "reused": verified_reuse(c.sentence, c.reused, deck),
-            "giveaway": gives_away_answer(c.sentence, result.definition, word),
-        }
-        for c in result.candidates
-    ]
+    """Verify each candidate, and check the most basic requirement of all.
+
+    `missing_target` catches a sentence that never uses the word it is supposed
+    to teach — some models substitute synonyms instead. Such a card would carry
+    no underlined word at all, so it is a hard failure rather than a warning.
+    """
+    out = []
+    for c in result.candidates:
+        sentence = strip_markdown(c.sentence)
+        surface = strip_markdown(c.surface_form)
+        present = contains_form(sentence, word) or contains_form(sentence, surface)
+        out.append(
+            {
+                "sentence": sentence,
+                "front_html": wrap_target(sentence, surface),
+                "reused": verified_reuse(sentence, c.reused, deck),
+                "giveaway": gives_away_answer(sentence, result.definition, word),
+                "missing_target": present is None,
+            }
+        )
+    return out

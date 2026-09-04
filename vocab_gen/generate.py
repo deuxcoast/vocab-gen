@@ -44,10 +44,13 @@ EFFORT_UNSUPPORTED = ("claude-haiku-4-5", "claude-sonnet-4-5", "claude-haiku-3")
 # the structured output, returning stop_reason=max_tokens. The ceiling is only a
 # cap — unused headroom costs nothing — but it stays at 16k, the safe limit for
 # non-streaming requests.
+# Only a ceiling — unused headroom costs nothing — but it has to clear the
+# reasoning some providers do regardless of effort. GLM with thinking left on
+# spent 4000 tokens reasoning and emitted no content at all.
 MAX_TOKENS_BY_EFFORT = {
-    None: 4000,
-    "low": 4000,
-    "medium": 8000,
+    None: 8000,
+    "low": 8000,
+    "medium": 12000,
     "high": 16000,
     "xhigh": 16000,
     "max": 16000,
@@ -141,6 +144,8 @@ Concrete beats abstract. A reader who did not know it was a vocabulary exercise 
 be able to tell.
 - 15 to 40 words. Vary the syntax across candidates; do not open every sentence the same way.
 - Give each candidate a clearly different subject matter and register from the others.
+- Write plain prose only. No markdown, no asterisks, no bold or italics, no HTML \
+in the sentence — the card applies its own formatting.
 - The target word must carry real semantic weight. Do NOT gloss or define it in the \
 sentence — no appositives like "the nexus, or central link, between…". The card has to test \
 recall, so context should suggest the meaning without handing it over.
@@ -251,6 +256,18 @@ def _explain(provider: str, model: str, exc: Exception) -> str:
             f"{provider} has no model {model!r}.\n"
             f"Its default is {cfg.default_model!r}; endpoints and model ids move, so "
             f"check the vendor docs or override VOCAB_{provider.upper()}_BASE_URL."
+        )
+    # A 402, or a 429 whose body mentions money, is a billing problem. Reporting
+    # it as rate limiting sends you off to wait instead of to top up.
+    body = str(exc).lower()
+    if status == 402 or any(
+        phrase in body
+        for phrase in ("insufficient balance", "no resource package", "recharge",
+                       "quota", "arrears", "billing")
+    ):
+        return (
+            f"{provider} reports no usable balance for {model!r}.\n"
+            "Top up, or pick a model on its free tier."
         )
     if status == 429 or "RateLimit" in name:
         return f"Rate limited by {provider}. Wait a moment and retry."

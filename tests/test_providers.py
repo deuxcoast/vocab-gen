@@ -247,19 +247,34 @@ def test_generation_schema_survives_strictify():
 # --- endpoints that cannot be defaulted --------------------------------------
 
 
-def test_workspace_scoped_provider_is_unavailable_without_a_base_url(monkeypatch):
-    """Qwen's endpoint is account-specific; a hardcoded guess would just 404."""
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
-    monkeypatch.delenv("VOCAB_DASHSCOPE_BASE_URL", raising=False)
-    assert available("dashscope") is False
-    assert "BASE_URL" in why_unavailable("dashscope")
+def test_provider_needing_an_endpoint_is_unavailable_without_one(monkeypatch):
+    """For accounts where the host is account-specific, a guess would just 404."""
+    from vocab_gen.providers import PROVIDERS, ProviderConfig
+
+    cfg = ProviderConfig(
+        name="scoped", kind="openai", base_url=None, needs_base_url=True,
+        key_env="SCOPED_API_KEY",
+    )
+    monkeypatch.setitem(PROVIDERS, "scoped", cfg)
+    monkeypatch.setenv("SCOPED_API_KEY", "k")
+    assert available("scoped") is False
+    assert "BASE_URL" in why_unavailable("scoped")
+
+    monkeypatch.setenv("VOCAB_SCOPED_BASE_URL", "https://w.example/v1")
+    assert available("scoped") is True
 
 
-def test_workspace_scoped_provider_becomes_available_with_one(monkeypatch):
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
-    monkeypatch.setenv("VOCAB_DASHSCOPE_BASE_URL", "https://w.example/compatible-mode/v1")
-    assert available("dashscope") is True
-    assert why_unavailable("dashscope") == ""
+def test_product_name_env_vars_are_accepted(monkeypatch):
+    """The vendor is Zhipu but the product is GLM; users reach for the product."""
+    monkeypatch.delenv("ZHIPUAI_API_KEY", raising=False)
+    monkeypatch.delenv("VOCAB_ZHIPU_API_KEY", raising=False)
+    monkeypatch.setenv("GLM_API_KEY", "k")
+    assert available("zhipu") is True
+
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("VOCAB_DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.setenv("QWEN_API_KEY", "k")
+    assert api_key_for(config_for("dashscope")) == "k"
 
 
 def test_why_unavailable_names_the_missing_key(monkeypatch):
@@ -296,3 +311,127 @@ def test_every_priced_model_names_a_real_provider():
 def test_pricing_is_ordered_cached_cheaper_than_input():
     for spec, (price_in, cached, _out) in MODEL_PRICING.items():
         assert cached <= price_in, spec
+
+
+# --- error interpretation ----------------------------------------------------
+
+
+def test_billing_failure_is_not_reported_as_rate_limiting():
+    """GLM returns 429 for an empty balance; 'wait and retry' is wrong advice."""
+    from vocab_gen.generate import _explain
+
+    class Exc(Exception):
+        status_code = 429
+
+    exc = Exc("Error code: 429 - {'error': {'code': '1113', 'message': "
+              "'Insufficient balance or no resource package. Please recharge.'}}")
+    message = _explain("zhipu", "glm-5.3", exc)
+    assert "balance" in message.lower()
+    assert "rate limit" not in message.lower()
+
+
+def test_402_is_reported_as_billing():
+    from vocab_gen.generate import _explain
+
+    class Exc(Exception):
+        status_code = 402
+
+    assert "balance" in _explain("deepseek", "deepseek-v4-flash", Exc("payment")).lower()
+
+
+def test_genuine_rate_limiting_still_says_so():
+    from vocab_gen.generate import _explain
+
+    class Exc(Exception):
+        status_code = 429
+
+    msg = _explain("zhipu", "glm-4.7-flash", Exc("Too many requests, slow down"))
+    assert "rate limited" in msg.lower()
+
+
+def test_zhipu_thinking_is_disabled_at_low_effort(monkeypatch):
+    """Left on, GLM burns the whole budget reasoning and returns empty content."""
+    captured = {}
+    _fake_openai(monkeypatch, '{"value": "x"}', captured=captured)
+    _complete(OpenAICompatProvider(config_for("zhipu")), effort="low")
+    assert captured["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+def test_zhipu_thinking_is_enabled_at_higher_effort(monkeypatch):
+    captured = {}
+    _fake_openai(monkeypatch, '{"value": "x"}', captured=captured)
+    _complete(OpenAICompatProvider(config_for("zhipu")), effort="high")
+    assert captured["extra_body"]["thinking"] == {"type": "enabled"}
+
+
+def test_qwen_thinking_flag_follows_effort(monkeypatch):
+    captured = {}
+    _fake_openai(monkeypatch, '{"value": "x"}', captured=captured)
+    _complete(OpenAICompatProvider(config_for("dashscope")), effort="low")
+    assert captured["extra_body"]["enable_thinking"] is False
+
+
+def test_falls_back_when_a_vendor_ignores_json_schema(monkeypatch):
+    """GLM accepts response_format=json_schema and returns prose anyway."""
+    calls = []
+
+    class Completions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            body = "Sentence 1\nSome prose, no JSON." if len(calls) == 1 else '{"value": "ok"}'
+            usage = types.SimpleNamespace(
+                prompt_tokens=10, completion_tokens=5, prompt_tokens_details=None
+            )
+            choice = types.SimpleNamespace(
+                message=types.SimpleNamespace(content=body), finish_reason="stop"
+            )
+            return types.SimpleNamespace(choices=[choice], usage=usage)
+
+    class Client:
+        def __init__(self, **kw):
+            self.chat = types.SimpleNamespace(completions=Completions())
+
+    import openai
+
+    monkeypatch.setattr(openai, "OpenAI", Client)
+    out = _complete(OpenAICompatProvider(config_for("dashscope")))
+
+    assert len(calls) == 2, "should retry once"
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["response_format"] == {"type": "json_object"}
+    assert "schema exactly" in calls[1]["messages"][1]["content"]
+    assert out.parsed.value == "ok"
+    assert "ignored" in out.structured
+
+
+def test_no_retry_when_schema_mode_works(monkeypatch):
+    captured = {}
+    _fake_openai(monkeypatch, '{"value": "hi"}', captured=captured)
+    out = _complete(OpenAICompatProvider(config_for("dashscope")))
+    assert out.structured == "schema"
+
+
+def test_no_retry_for_providers_already_using_json_object(monkeypatch):
+    calls = []
+
+    class Completions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            usage = types.SimpleNamespace(
+                prompt_tokens=10, completion_tokens=5, prompt_tokens_details=None
+            )
+            choice = types.SimpleNamespace(
+                message=types.SimpleNamespace(content="not json"), finish_reason="stop"
+            )
+            return types.SimpleNamespace(choices=[choice], usage=usage)
+
+    class Client:
+        def __init__(self, **kw):
+            self.chat = types.SimpleNamespace(completions=Completions())
+
+    import openai
+
+    monkeypatch.setattr(openai, "OpenAI", Client)
+    out = _complete(OpenAICompatProvider(config_for("zhipu")))
+    assert len(calls) == 1  # already the weaker mode; nothing to fall back to
+    assert out.parsed is None

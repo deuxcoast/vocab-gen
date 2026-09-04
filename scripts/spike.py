@@ -65,6 +65,7 @@ def probe(spec: str, word: str, vocab, words, prefer, avoid) -> dict:
         verified=verified,
         invented=invented,
         giveaway=sum(1 for c in cands if c["giveaway"]),
+        missing=sum(1 for c in cands if c["missing_target"]),
         sample=cands[0]["sentence"] if cands else "",
         cost=cost_of(spec, usage),
     )
@@ -105,7 +106,7 @@ def main() -> int:
             rows.append(probe(resolved, args.word, vocab, words, prefer, avoid))
 
     head = f"{'spec':30s} {'ok':3s} {'in':>6s} {'out':>6s} {'cw':>6s} {'cr':>6s} "
-    head += f"{'claim':>5s} {'ver':>4s} {'inv':>4s} {'give':>4s} {'secs':>5s} {'$/100':>7s}"
+    head += f"{'claim':>5s} {'ver':>4s} {'inv':>4s} {'give':>4s} {'miss':>4s} {'secs':>5s} {'$/100':>7s}"
     print(head)
     print("-" * len(head))
     for r in rows:
@@ -118,12 +119,12 @@ def main() -> int:
             f"{r['spec']:30s} {'yes':3s} {r['input']:6d} {r['output']:6d} "
             f"{r['cache_write']:6d} {r['cache_read']:6d} {r['claimed']:5d} "
             f"{r['verified']:4d} {r['invented']:4d} {r['giveaway']:4d} "
-            f"{r['secs']:5.1f} {money}"
+            f"{r['missing']:4d} {r['secs']:5.1f} {money}"
         )
 
     print(
         "\nlegend: cw/cr=cache write/read · claim=reuses asserted · ver=verified "
-        "real · inv=hallucinated · give=candidates leaking the definition"
+        "real · inv=hallucinated · give=leaks the definition · miss=target word absent"
     )
     print(
         f"$/100 = projected dollars per 100 cards at this call's token mix; "

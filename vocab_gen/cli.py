@@ -32,6 +32,8 @@ def _print_result(word, result, cands, model, effort, color: bool) -> None:
             print(s(f"     reuses: {', '.join(c['reused'])}", "32"))
         else:
             print(s("     reuses: nothing (no natural fit)", "2"))
+        if c["missing_target"]:
+            print(s(f"     ✗ does not use {word!r} at all — unusable", "1;31"))
         if c["giveaway"]:
             print(s(f"     ⚠ gives the answer away: {', '.join(c['giveaway'])}", "31"))
         print()
