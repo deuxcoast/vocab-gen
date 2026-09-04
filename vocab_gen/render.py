@@ -5,6 +5,8 @@ from __future__ import annotations
 import html
 import re
 
+from wordfreq import zipf_frequency
+
 from .morphology import content_words, match_span, phrase_keys, pos_of
 
 
@@ -100,27 +102,54 @@ def unknown_claims(claimed: list[str], deck) -> list[str]:
     return [w for w in claimed if _canonical(w, deck) is None]
 
 
-def gives_away_answer(sentence: str, definition: list[str], target: str) -> list[str]:
-    """Content words shared by the sentence and the word's own definition.
+# Zipf scale: 7 is "the", 6 is "need"/"against", 3 is "bearers"/"treachery".
+# Measured on the words this check actually flagged: coincidental overlaps sat at
+# 5.7-6.4 and genuine giveaways at 2.6-3.8, so the boundary goes between them.
+INFORMATIVE_ZIPF = 4.5
 
-    A card stops testing recall if the sentence hands over the meaning. Only
-    content words count — real part-of-speech tagging replaces a hand-written
-    stopword list, so "used", "way" and "person" no longer have to be guessed at.
-    Returns the offending words so a candidate can be flagged rather than
-    dropped; short overlaps are often innocent.
+
+def _informative(word: str) -> bool:
+    """Rare enough that sharing it with the definition is unlikely to be chance."""
+    return zipf_frequency(word, "en") < INFORMATIVE_ZIPF
+
+
+def gives_away_answer(sentence: str, definition: list[str], target: str) -> list[str]:
+    """Words shared with the definition that actually leak the meaning.
+
+    Sharing a content word is not enough on its own: "need" or "cultural" turn up
+    in a definition and a sentence by coincidence, and flagging those buries the
+    real cases and adds noise to a metric used to compare prompts.
+
+    A shared word counts when it is rare enough to be informative, or when
+    several are shared at once — one common word is a coincidence, three is the
+    definition being paraphrased.
     """
     target_keys = set().union(*phrase_keys(target)) if phrase_keys(target) else set()
     defined = content_words(" ".join(definition))
     if not defined:
         return []
 
-    hits: list[str] = []
+    shared: list[tuple[str, str]] = []
     for lemma_, surface in content_words(sentence).items():
         if lemma_ in target_keys or surface.lower() in target_keys:
             continue
-        if lemma_ in defined and surface not in hits:
-            hits.append(surface)
-    return hits
+        if lemma_ in defined:
+            shared.append((lemma_, surface))
+
+    informative = [surface for lemma_, surface in shared if _informative(lemma_)]
+    if informative:
+        return informative
+    # No single word is rare, but if the sentence reproduces enough of the
+    # definition it is a paraphrase regardless of how common the parts are.
+    # Counting shared words is the wrong test — what matters is how much of the
+    # definition came through, so a long sentence cannot accumulate coincidences.
+    if shared and len(shared) / len(defined) >= PARAPHRASE_SHARE:
+        return [surface for _lemma, surface in shared]
+    return []
+
+
+# Half the definition's content words turning up is no longer a coincidence.
+PARAPHRASE_SHARE = 0.5
 
 
 # How the model's own part-of-speech label maps onto what spaCy tags.

@@ -231,10 +231,17 @@ collapse (`strait` never credits `straitjacket`). Part-of-speech tagging adds a 
 could do before: **if the card teaches the verb sense of `countenance` and the sentence uses
 the noun, the card does not reinforce what was learned** — the candidate is flagged.
 
-Candidates are also checked for **giving the answer away** — content words shared between the
-sentence and the word's own definition, which quietly turns a recall test into a freebie.
-Flagged rather than dropped, since short overlaps are often innocent. About 1 in 5 candidates
-trips this.
+Candidates are also checked for **giving the answer away** — a sentence that hands over the
+meaning turns a recall test into a freebie. Sharing a content word is not enough on its own:
+a shared word counts when it is **rare enough to be informative** (Zipf below 4.5), or when
+the sentence **reproduces at least half the definition's content words**, which is a
+paraphrase however common the parts are.
+
+The threshold came from the data rather than intuition. Across the flagged words in stored
+runs, coincidental overlaps sat at Zipf 5.7–6.4 (`against`, `over`, `need`) and genuine
+giveaways at 2.6–3.8 (`unyielding`, `bearers`, `treachery`). This matters beyond presentation:
+`giveaway_rate` is one of the metrics prompts are compared on, so false positives add noise to
+the measurement itself.
 
 ```bash
 vocab --stats          # coverage, plus the shakiest words in your deck
