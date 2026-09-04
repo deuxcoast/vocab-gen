@@ -136,6 +136,12 @@ function render(data) {
     else { r.className = 'reuse none'; r.textContent = 'reuses nothing — stands on its own'; }
     card.appendChild(r);
 
+    if (c.missing_target) {
+      const m = document.createElement('div');
+      m.className = 'giveaway';
+      m.textContent = 'does not use the target word at all — unusable';
+      card.appendChild(m);
+    }
     if (c.giveaway && c.giveaway.length) {
       const g = document.createElement('div');
       g.className = 'giveaway';

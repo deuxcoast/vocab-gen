@@ -1,4 +1,6 @@
-from vocab_gen.render import back_html, wrap_target
+import pytest
+
+from vocab_gen.render import back_html, prepare, wrap_target
 
 
 def test_wraps_first_occurrence_in_anki_nesting():
@@ -176,3 +178,85 @@ def test_stopwords_and_short_words_are_ignored():
         )
         == []
     )
+
+
+from vocab_gen.render import unknown_claims
+
+
+def test_unknown_claims_flags_only_real_inventions():
+    assert unknown_claims(["mawkishness"], DECK) == ["mawkishness"]
+
+
+def test_unknown_claims_does_not_punish_inflection():
+    """The bug this replaces: 'supplicant' against a deck holding 'supplicants'."""
+    assert unknown_claims(["supplicant"], DECK) == []
+    assert unknown_claims(["adumbrates"], DECK) == []
+
+
+def test_unknown_claims_and_verified_reuse_agree():
+    """A claim cannot be both credited and counted as invented."""
+    sentence = "A lone supplicant waited near the strait."
+    claims = ["supplicant", "strait", "mawkishness"]
+    credited = verified_reuse(sentence, claims, DECK)
+    invented = unknown_claims(claims, DECK)
+    assert not (set(credited) & set(invented))
+    assert len(credited) + len(invented) == len(claims)
+
+
+from vocab_gen.render import strip_markdown
+
+
+@pytest.mark.parametrize(
+    "raw, clean",
+    [
+        ("remained **obdurate**, insisting", "remained obdurate, insisting"),
+        ("his *sedulous* attempts", "his sedulous attempts"),
+        ("__both__ and _kinds_", "both and kinds"),
+        ("***very*** emphatic", "very emphatic"),
+        ("nothing to strip here", "nothing to strip here"),
+    ],
+)
+def test_strip_markdown(raw, clean):
+    assert strip_markdown(raw) == clean
+
+
+def test_strip_markdown_leaves_bare_punctuation_alone():
+    # A lone asterisk or an intra-word underscore is not emphasis.
+    assert strip_markdown("a * b") == "a * b"
+    assert strip_markdown("snake_case_name") == "snake_case_name"
+
+
+class _C:
+    def __init__(self, sentence, surface_form, reused=()):
+        self.sentence, self.surface_form, self.reused = sentence, surface_form, list(reused)
+
+
+class _R:
+    definition = ["Unyielding."]
+
+    def __init__(self, cands):
+        self.candidates = cands
+
+
+def test_prepare_flags_a_sentence_missing_the_target():
+    """Some models substitute synonyms; that card has no word to underline."""
+    r = _R([_C("The leadership remained stubborn and unyielding.", "obdurate")])
+    assert prepare(r, "obdurate", DECK)[0]["missing_target"] is True
+
+
+def test_prepare_accepts_an_inflected_target():
+    r = _R([_C("Their obduracy was total.", "obduracy")])
+    out = prepare(r, "obdurate", DECK)[0]
+    assert out["missing_target"] is False
+
+
+def test_prepare_accepts_the_plain_target():
+    r = _R([_C("The governor remained obdurate.", "obdurate")])
+    assert prepare(r, "obdurate", DECK)[0]["missing_target"] is False
+
+
+def test_prepare_strips_markdown_before_checking():
+    r = _R([_C("The governor remained **obdurate**.", "**obdurate**")])
+    out = prepare(r, "obdurate", DECK)[0]
+    assert out["missing_target"] is False
+    assert "**" not in out["front_html"]

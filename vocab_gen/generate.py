@@ -1,11 +1,23 @@
-"""Ask Claude for example sentences that reuse the user's existing vocabulary."""
+"""Ask a model for example sentences that reuse the user's existing vocabulary.
+
+Which model is a runtime choice — see `providers.py` for the vendor differences
+this module deliberately does not know about.
+"""
 
 from __future__ import annotations
 
 import os
 
-import anthropic
 from pydantic import BaseModel, Field
+
+from .providers import (
+    PROVIDERS,
+    ProviderError,
+    SystemBlock,
+    available,
+    build,
+    config_for,
+)
 
 DEFAULT_MODEL = "claude-sonnet-5"
 
@@ -32,18 +44,37 @@ EFFORT_UNSUPPORTED = ("claude-haiku-4-5", "claude-sonnet-4-5", "claude-haiku-3")
 # the structured output, returning stop_reason=max_tokens. The ceiling is only a
 # cap — unused headroom costs nothing — but it stays at 16k, the safe limit for
 # non-streaming requests.
+# Only a ceiling — unused headroom costs nothing — but it has to clear the
+# reasoning some providers do regardless of effort. GLM with thinking left on
+# spent 4000 tokens reasoning and emitted no content at all.
 MAX_TOKENS_BY_EFFORT = {
-    None: 4000,
-    "low": 4000,
-    "medium": 8000,
+    None: 8000,
+    "low": 8000,
+    "medium": 12000,
     "high": 16000,
     "xhigh": 16000,
     "max": 16000,
 }
 
 
-def supports_effort(model: str) -> bool:
-    return not any(model.startswith(prefix) for prefix in EFFORT_UNSUPPORTED)
+def split_spec(spec: str) -> tuple[str, str]:
+    """"deepseek:deepseek-chat" -> ("deepseek", "deepseek-chat").
+
+    A bare model id means Anthropic, so every existing invocation still works.
+    """
+    provider, sep, model = spec.partition(":")
+    return (provider, model) if sep else ("anthropic", spec)
+
+
+def supports_effort(spec: str) -> bool:
+    """Whether it is safe to send a reasoning-depth setting for this target."""
+    provider, model = split_spec(spec)
+    cfg = config_for(provider)
+    if cfg.reasoning is None:
+        return False
+    if cfg.kind == "anthropic":
+        return not any(model.startswith(prefix) for prefix in EFFORT_UNSUPPORTED)
+    return True
 
 
 def resolve_effort(name: str | None = None) -> str:
@@ -59,7 +90,12 @@ def resolve_effort(name: str | None = None) -> str:
 def resolve_model(name: str | None = None) -> str:
     """Explicit argument beats $VOCAB_MODEL beats the default."""
     chosen = name or os.environ.get("VOCAB_MODEL") or DEFAULT_MODEL
-    return MODEL_ALIASES.get(chosen.lower(), chosen)
+    low = chosen.lower()
+    if low in MODEL_ALIASES:
+        return MODEL_ALIASES[low]
+    if low in PROVIDERS:  # bare provider name -> that provider's default model
+        return f"{low}:{config_for(low).default_model}"
+    return chosen
 
 
 class Candidate(BaseModel):
@@ -108,6 +144,8 @@ Concrete beats abstract. A reader who did not know it was a vocabulary exercise 
 be able to tell.
 - 15 to 40 words. Vary the syntax across candidates; do not open every sentence the same way.
 - Give each candidate a clearly different subject matter and register from the others.
+- Write plain prose only. No markdown, no asterisks, no bold or italics, no HTML \
+in the sentence — the card applies its own formatting.
 - The target word must carry real semantic weight. Do NOT gloss or define it in the \
 sentence — no appositives like "the nexus, or central link, between…". The card has to test \
 recall, so context should suggest the meaning without handing it over.
@@ -135,22 +173,19 @@ the word worth knowing. Do not repeat the target word inside its own definition.
 """
 
 
-def build_system(words: list[str]) -> list[dict]:
+def build_system(words: list[str]) -> list[SystemBlock]:
     """Static instructions + the known-word list, as a cacheable prefix.
 
     The word list is sorted deterministically upstream; an unstable order here
     would silently invalidate the cached prefix on every call.
     """
     return [
-        {"type": "text", "text": INSTRUCTIONS},
-        {
-            "type": "text",
-            "text": (
-                "The learner's known-word list follows. These are the words already in "
-                f"the deck ({len(words)} of them):\n\n" + ", ".join(words)
-            ),
-            "cache_control": {"type": "ephemeral"},
-        },
+        SystemBlock(INSTRUCTIONS),
+        SystemBlock(
+            "The learner's known-word list follows. These are the words already in "
+            f"the deck ({len(words)} of them):\n\n" + ", ".join(words),
+            cacheable=True,
+        ),
     ]
 
 
@@ -164,56 +199,84 @@ def generate(
     effort: str | None = None,
     kept: list[dict] | None = None,
 ) -> tuple[Generation, object, str, str | None]:
-    """Return the parsed generation, the usage object, the model, and the effort used."""
-    model = resolve_model(model)
-    effort = resolve_effort(effort) if supports_effort(model) else None
-    if not (
-        os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    ):
+    """Return the parsed generation, usage, the model spec, and the effort used."""
+    spec = resolve_model(model)
+    provider_name, model_id = split_spec(spec)
+    cfg = config_for(provider_name)
+    effort = resolve_effort(effort) if supports_effort(spec) else None
+
+    if not available(provider_name):
         raise SystemExit(
-            "No Anthropic credentials found.\n"
-            "Set one before generating:  export ANTHROPIC_API_KEY=sk-ant-...\n"
+            f"No credentials for provider {provider_name!r}.\n"
+            f"Set {cfg.key_env} (or VOCAB_{provider_name.upper()}_API_KEY) in your .env.\n"
             "(Extraction still works without it: try `vocab --list-words`.)"
         )
 
-    client = anthropic.Anthropic()
+    provider = build(provider_name)
     try:
-        response = _call(client, word, words, n, model, prefer, avoid, effort, kept)
-    except anthropic.AuthenticationError:
-        raise SystemExit(
-            "Anthropic rejected the API key (401).\n"
-            "Check the ANTHROPIC_API_KEY value in your .env, or in the shell if you "
-            "exported one there — an exported variable overrides the file."
-        ) from None
-    except anthropic.NotFoundError:
-        raise SystemExit(
-            f"No such model: {model!r}.\n"
-            "Try one of: opus, sonnet, haiku (or a full model id)."
-        ) from None
-    except anthropic.RateLimitError:
-        raise SystemExit(
-            "Rate limited by the Anthropic API. Wait a moment and retry."
-        ) from None
-    except anthropic.APIConnectionError:
-        raise SystemExit(
-            "Could not reach the Anthropic API. Check your connection."
-        ) from None
-    except anthropic.APIStatusError as exc:
-        raise SystemExit(
-            f"Anthropic API error {exc.status_code}: {exc.message}"
-        ) from None
+        completion = provider.complete(
+            model=model_id,
+            system=build_system(words),
+            user=build_user_message(word, n, prefer, avoid, kept),
+            schema_model=Generation,
+            max_tokens=MAX_TOKENS_BY_EFFORT.get(effort, 4000),
+            effort=effort,
+        )
+    except ProviderError as exc:
+        raise SystemExit(str(exc)) from None
+    except Exception as exc:  # every vendor SDK raises its own hierarchy
+        raise SystemExit(_explain(provider_name, model_id, exc)) from None
 
-    parsed = response.parsed_output
-    if parsed is None:
-        if response.stop_reason == "max_tokens":
+    if completion.parsed is None:
+        if completion.stop_reason in ("max_tokens", "length"):
             raise SystemExit(
                 f"Ran out of output budget at effort={effort!r} before the model "
                 "finished. Retry at a lower effort."
             )
         raise SystemExit(
-            f"Model returned no structured output (stop_reason={response.stop_reason})."
+            f"{provider_name} returned no usable structured output "
+            f"(stop_reason={completion.stop_reason}, mode={completion.structured})."
         )
-    return parsed, response.usage, model, effort
+    return completion.parsed, completion.usage, spec, effort
+
+
+def _explain(provider: str, model: str, exc: Exception) -> str:
+    """Turn a vendor exception into something worth reading."""
+    name = type(exc).__name__
+    status = getattr(exc, "status_code", None)
+    cfg = config_for(provider)
+    if status == 401 or "Authentication" in name:
+        return (
+            f"{provider} rejected the API key (401).\n"
+            f"Check {cfg.key_env} in your .env, or in the shell if you exported one "
+            "there — an exported variable overrides the file."
+        )
+    if status == 404 or "NotFound" in name:
+        return (
+            f"{provider} has no model {model!r}.\n"
+            f"Its default is {cfg.default_model!r}; endpoints and model ids move, so "
+            f"check the vendor docs or override VOCAB_{provider.upper()}_BASE_URL."
+        )
+    # A 402, or a 429 whose body mentions money, is a billing problem. Reporting
+    # it as rate limiting sends you off to wait instead of to top up.
+    body = str(exc).lower()
+    if status == 402 or any(
+        phrase in body
+        for phrase in ("insufficient balance", "no resource package", "recharge",
+                       "quota", "arrears", "billing")
+    ):
+        return (
+            f"{provider} reports no usable balance for {model!r}.\n"
+            "Top up, or pick a model on its free tier."
+        )
+    if status == 429 or "RateLimit" in name:
+        return f"Rate limited by {provider}. Wait a moment and retry."
+    if "Connection" in name:
+        return (
+            f"Could not reach {provider} at {cfg.base_url or 'its default endpoint'}.\n"
+            "Check your connection, or the base URL if you overrode it."
+        )
+    return f"{provider} error ({name}): {str(exc)[:300]}"
 
 
 def build_user_message(
@@ -274,29 +337,3 @@ def build_user_message(
                 examples,
             ]
     return "\n".join(parts)
-
-
-def _call(
-    client,
-    word: str,
-    words: list[str],
-    n: int,
-    model: str,
-    prefer=None,
-    avoid: list[str] | None = None,
-    effort: str | None = None,
-    kept: list[dict] | None = None,
-):
-    return client.messages.parse(
-        model=model,
-        max_tokens=MAX_TOKENS_BY_EFFORT.get(effort, 4000),
-        system=build_system(words),
-        output_format=Generation,
-        messages=[
-            {
-                "role": "user",
-                "content": build_user_message(word, n, prefer, avoid, kept),
-            }
-        ],
-        **({"output_config": {"effort": effort}} if effort else {}),
-    )

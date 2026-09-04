@@ -3,7 +3,10 @@ name = "vocab-gen"
 version = "0.1.0"
 description = "Generate Anki vocabulary sentences that reuse the words you're already learning."
 requires-python = ">=3.10"
-dependencies = ["anthropic>=0.40"]
+dependencies = [
+    "anthropic>=0.40",
+    "openai>=3.8.0",
+]
 
 [project.scripts]
 vocab = "vocab_gen.cli:main"
