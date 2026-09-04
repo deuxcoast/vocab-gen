@@ -217,6 +217,7 @@ def generate(
     allow_fallback: bool = True,
     variant: str | PromptVariant | None = None,
     oversample: int = 1,
+    batches: int = 1,
 ) -> Outcome:
     """Generate candidates, falling back to a second model if the first cannot.
 
@@ -233,9 +234,10 @@ def generate(
         variant if variant is not None else DEFAULT_VARIANT
     )
     asked = max(1, n * max(1, oversample, chosen.oversample))
+    rounds = max(1, batches, chosen.batches)
     try:
-        return _generate_once(
-            spec, word, words, asked, prefer, avoid, effort, kept,
+        return _pooled(
+            rounds, spec, word, words, asked, prefer, avoid, effort, kept,
             variant if variant is not None else DEFAULT_VARIANT,
         )
     except GenerationError as primary:
@@ -252,8 +254,8 @@ def generate(
         try:
             # The fallback runs on a different model, which needs a different
             # prompt: the balanced variant measurably degrades Qwen.
-            outcome = _generate_once(
-                fallback, word, words, asked, prefer, avoid, effort, kept,
+            outcome = _pooled(
+                rounds, fallback, word, words, asked, prefer, avoid, effort, kept,
                 variant if variant is not None else FALLBACK_VARIANT,
             )
         except GenerationError as secondary:
@@ -270,6 +272,37 @@ def generate(
             ) from None
         outcome.fell_back_from = primary
         return outcome
+
+
+def _pooled(rounds, spec, word, words, n, prefer, avoid, effort, kept, variant) -> Outcome:
+    """One request, or several pooled into one Outcome.
+
+    Deliberately sequential. Concurrent calls would halve the latency but would
+    also race the prompt cache: the first request has not written it when the
+    second starts, so both pay full price for the shared prefix.
+    """
+    first = _generate_once(spec, word, words, n, prefer, avoid, effort, kept, variant)
+    if rounds <= 1:
+        return first
+
+    usage = first.usage
+    for _ in range(rounds - 1):
+        nxt = _generate_once(spec, word, words, n, prefer, avoid, effort, kept, variant)
+        first.result.candidates.extend(nxt.result.candidates)
+        usage = _add_usage(usage, nxt.usage)
+    first.usage = usage
+    return first
+
+
+def _add_usage(a, b):
+    from .providers import Usage
+
+    return Usage(
+        input_tokens=a.input_tokens + b.input_tokens,
+        output_tokens=a.output_tokens + b.output_tokens,
+        cache_read=a.cache_read_input_tokens + b.cache_read_input_tokens,
+        cache_write=a.cache_creation_input_tokens + b.cache_creation_input_tokens,
+    )
 
 
 def _generate_once(

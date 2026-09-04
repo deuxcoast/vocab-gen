@@ -127,6 +127,11 @@ class PromptVariant:
     # of the variant rather than a run-level flag so two arms differing only in
     # over-sampling can be judged side by side, in one run, on the same words.
     oversample: int = 1
+    # Separate calls of n candidates each, pooled. Distinct from oversample:
+    # asking one call for 2n makes the model spread its candidates across more
+    # ground, since the prompt tells it to vary them, which appears to lower the
+    # reuse rate of the pool being ranked. Two calls each see a normal request.
+    batches: int = 1
 
     def system_text(self) -> str:
         return "\n\n".join(self.blocks)
@@ -180,6 +185,18 @@ VARIANTS: dict[str, PromptVariant] = {
         ),
         blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
         oversample=3,
+    ),
+    "baseline-b2": PromptVariant(
+        name="baseline-b2",
+        hypothesis=(
+            "Two separate calls of three rather than one call of six. Tests the "
+            "explanation offered for over-sampling's failure: if asking for six "
+            "at once dilutes the pool, two normal requests should not, and "
+            "ranking over them should raise reuse. If reuse stays flat here too, "
+            "dilution was the wrong explanation."
+        ),
+        blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
+        batches=2,
     ),
     "no-glosses": PromptVariant(
         name="no-glosses",

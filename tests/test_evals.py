@@ -506,3 +506,37 @@ def test_oversampled_selection_survives_markdown(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "RUNS_DIR", tmp_path)
     _id, rows = runner.run(["m"], variants=["baseline-os2"], n_cases=1, judge_model=None)
     assert len(rows) == 3, "all three selected candidates must survive"
+
+
+def test_batching_makes_several_calls_and_pools_them(monkeypatch):
+    from vocab_gen import generate as gen
+    from vocab_gen.prompts import get
+
+    calls = []
+
+    def once(spec, word, words, n, *a, **kw):
+        calls.append(n)
+        return gen.Outcome(
+            types.SimpleNamespace(
+                definition=["d"], part_of_speech="noun",
+                candidates=[cand(f"Sentence {len(calls)} is obdurate.", "obdurate")],
+            ),
+            types.SimpleNamespace(
+                input_tokens=10, output_tokens=5,
+                cache_read_input_tokens=1, cache_creation_input_tokens=0,
+            ),
+            spec, "low",
+        )
+
+    monkeypatch.setattr(gen, "_generate_once", once)
+    out = gen.generate("obdurate", ["zephyr"], n=3, variant=get("baseline-b2"))
+    assert calls == [3, 3], "two normal-sized requests, not one large one"
+    assert len(out.result.candidates) == 2, "candidates are pooled"
+    assert out.usage.input_tokens == 20 and out.usage.output_tokens == 10
+
+
+def test_batching_is_distinct_from_oversampling():
+    from vocab_gen.prompts import get
+
+    assert get("baseline-b2").batches == 2 and get("baseline-b2").oversample == 1
+    assert get("baseline-os2").oversample == 2 and get("baseline-os2").batches == 1

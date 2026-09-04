@@ -99,6 +99,7 @@ def run(
             # The variant may carry its own over-sampling; a run-level flag
             # still works and wins, for a quick sweep without naming a variant.
             factor = max(oversample, getattr(variant, "oversample", 1))
+            rounds = getattr(variant, "batches", 1)
             arm = f"{variant_name}+os{factor}" if factor > 1 and factor != variant.oversample else variant_name
             for case in cases:
                 started = time.perf_counter()
@@ -106,7 +107,7 @@ def run(
                     outcome = generate(
                         case.word, words, n=n_candidates, model=spec,
                         prefer=prefer, avoid=avoid, kept=[], allow_fallback=False,
-                        variant=variant, oversample=factor,
+                        variant=variant, oversample=factor, batches=rounds,
                     )
                     result, usage, used = outcome.result, outcome.usage, outcome.model
                 except Exception as exc:
@@ -121,7 +122,7 @@ def run(
                 # Rank and truncate exactly as the CLI does, so the eval scores
                 # what a user would actually be shown rather than the raw pool.
                 shown = result.candidates
-                if factor > 1:
+                if factor > 1 or rounds > 1:
                     # Match on position, not on sentence text: prepare() strips
                     # markdown, so comparing strings silently fails for any
                     # candidate the model emphasised, and drops it from the run.
