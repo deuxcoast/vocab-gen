@@ -46,7 +46,8 @@ def classify(exc: Exception) -> str:
     if any(
         phrase in body
         for phrase in ("insufficient balance", "no resource package", "recharge",
-                       "arrears", "billing", "quota exceeded", "out of credit")
+                       "arrears", "billing", "quota", "out of credit",
+                       "payment information", "free tier")
     ) or status == 402:
         return "balance"
     if status == 401 or status == 403 or "authentication" in name.lower() or (
