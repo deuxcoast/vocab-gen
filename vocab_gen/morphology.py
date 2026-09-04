@@ -1,110 +1,161 @@
-"""Crude English inflection handling.
+"""Word-form matching, via real lemmatization.
 
-Deliberately not a real stemmer library: this only needs to decide whether two
-surface forms are the same word ("supplicant"/"supplicants",
-"adumbrate"/"adumbrated"), which inflectional suffix-stripping handles. Rules
-stop at inflection and never touch derivation — collapsing "relate"/"relative"
-would produce false reuse credit, which is worse than missing a match.
+This replaces a hand-rolled suffix stripper. That stripper worked for common
+inflection but could not tell derivation from inflection except by a denylist,
+had no idea what part of speech a word was, and needed a stopword list written
+by hand.
+
+Two things follow from having POS available that were impossible before: the
+giveaway check can compare content words only, using a real stopword list; and
+a card can be checked for *sense* — if the deck teaches the verb sense and the
+sentence uses the noun, the card does not reinforce what was learned.
+
+Matching compares a set of keys per token — the surface form and the lemma —
+rather than lemmas alone. Lemmatization is context-sensitive, and a deck entry
+is lemmatized with almost no context ("running" alone tags as a noun), so
+insisting on lemma equality would miss real matches. Any key in common at every
+position counts.
 """
 
 from __future__ import annotations
 
+import functools
 import re
+from dataclasses import dataclass
 
-VOWELS = set("aeiou")
+MODEL = "en_core_web_sm"
 
-# Words whose stem must not be truncated by the generic rules below.
-_IRREGULAR = {
-    "is": "be", "are": "be", "was": "be", "were": "be", "been": "be",
-    "has": "have", "had": "have", "having": "have",
-    "men": "man", "women": "woman", "children": "child", "teeth": "tooth",
-    "feet": "foot", "geese": "goose", "mice": "mouse", "people": "person",
-}
+# Content words are the ones that can leak a definition; the rest are glue.
+CONTENT_POS = frozenset({"NOUN", "PROPN", "VERB", "ADJ", "ADV"})
 
 
-def stem(word: str) -> str:
-    """Reduce one token to a comparison key."""
-    w = word.lower().strip("'’")
-    if w in _IRREGULAR:
-        return _IRREGULAR[w]
-    if len(w) <= 3:
-        return w
+@dataclass(frozen=True)
+class Token:
+    text: str
+    lemma: str
+    pos: str
+    is_stop: bool
 
-    for suffix, minimum in (("ies", 4), ("ied", 4), ("ier", 4), ("iest", 5)):
-        if w.endswith(suffix) and len(w) > minimum:
-            return w[: -len(suffix)] + "y"
-
-    for suffix in ("ing", "edly", "ed", "es", "s", "ly"):
-        if not w.endswith(suffix):
-            continue
-        base = w[: -len(suffix)]
-        if len(base) < 3:
-            continue
-        if suffix == "s" and w.endswith("ss"):
-            continue  # "class" is not a plural
-        if suffix == "es" and not base.endswith(("s", "x", "z", "ch", "sh")):
-            # "boxes" -> "box", but "gates" -> "gate", not "gat"
-            base = w[:-1]
-        # "running" -> "runn" -> "run"
-        if (
-            suffix in ("ing", "ed")
-            and len(base) > 3
-            and base[-1] == base[-2]
-            and base[-1] not in VOWELS
-        ):
-            base = base[:-1]
-        return _drop_final_e(base)
-    return _drop_final_e(w)
+    @property
+    def keys(self) -> frozenset[str]:
+        return frozenset({self.text.lower(), self.lemma.lower()})
 
 
-def _drop_final_e(w: str) -> str:
-    """Collapse the silent-e alternation: adumbrate/adumbrated -> adumbrat.
+@functools.lru_cache(maxsize=1)
+def _nlp():
+    try:
+        import spacy
+    except ImportError:
+        # Reached from grading, not from the provider call, so the setup
+        # classification around API errors never sees it.
+        raise SystemExit(
+            "spaCy is not installed in the environment running this command.\n"
+            "It is a pinned dependency, so this is usually a stale install:\n"
+            "  uv sync\n"
+            "  uv tool install --editable --force ~/deuxcoast/vocab-gen"
+        ) from None
 
-    Applied to every stem so both sides of a comparison land in the same place.
-    """
-    return w[:-1] if len(w) > 3 and w.endswith("e") else w
+    try:
+        # The parser and NER cost time and are not used; the tagger is required
+        # because the lemmatizer is rule-based and needs the part of speech.
+        return spacy.load(MODEL, disable=["parser", "ner", "senter"])
+    except OSError:
+        raise SystemExit(
+            f"The spaCy model {MODEL!r} is not installed.\n"
+            "It is a pinned dependency, so this usually means the environment is "
+            "stale:\n"
+            "  uv sync\n"
+            "  uv tool install --editable --force ~/deuxcoast/vocab-gen"
+        ) from None
 
 
-_TOKEN = re.compile(r"[^\W\d_]+(?:[-'’][^\W\d_]+)*", re.UNICODE)
+@functools.lru_cache(maxsize=4096)
+def analyze(text: str) -> tuple[Token, ...]:
+    """Tokens of `text`, with lemma and part of speech. Cached: sentences repeat."""
+    doc = _nlp()(text)
+    return tuple(
+        Token(t.text, t.lemma_, t.pos_, t.is_stop) for t in doc if not t.is_punct and not t.is_space
+    )
 
 
 def tokenize(text: str) -> list[str]:
-    return _TOKEN.findall(text)
+    return [t.text for t in analyze(text)]
 
 
-def stem_phrase(phrase: str) -> tuple[str, ...]:
-    """A multi-word deck entry compares token-by-token ('sluice gates')."""
-    return tuple(stem(t) for t in tokenize(phrase))
+def lemma(word: str) -> str:
+    """Lemma of a single word, for callers that just want a comparison key."""
+    tokens = analyze(word)
+    return tokens[0].lemma.lower() if tokens else word.lower()
 
 
-def contains_form(sentence: str, term: str) -> str | None:
-    """Return the surface text in `sentence` matching `term`, allowing inflection.
+def _keys(text: str) -> list[frozenset[str]]:
+    return [t.keys for t in analyze(text)]
 
-    Returns None when the term does not appear in any inflected form.
+
+def match_span(sentence: str, term: str) -> str | None:
+    """Return the text in `sentence` matching `term`, allowing inflection.
+
+    Hyphens are opened up on a second pass: a deck entry like "pied-à-terre" is
+    one token, but a compound modifier like "zephyr-like" should still credit
+    "zephyr".
     """
-    # Hyphens are kept inside tokens so "pied-à-terre" stays one word, but that
-    # also welds compound modifiers together ("zephyr-like"). Try the sentence
-    # as written first, then again with hyphens opened up.
-    for text, split_hyphens in ((sentence, False), (sentence, True)):
-        found = _find(text, term, split_hyphens)
+    for text, phrase in ((sentence, term), (_open(sentence), _open(term))):
+        found = _find(text, phrase)
         if found:
             return found
     return None
 
 
-def _find(sentence: str, term: str, split_hyphens: bool) -> str | None:
-    if split_hyphens:
-        sentence = sentence.replace("-", " ").replace("\u2011", " ")
-        term = term.replace("-", " ")
-    target = stem_phrase(term)
+def _open(text: str) -> str:
+    return text.replace("-", " ").replace("‑", " ")
+
+
+def _find(sentence: str, term: str) -> str | None:
+    target = _keys(term)
     if not target:
         return None
-    tokens = _TOKEN.findall(sentence)
+    tokens = analyze(sentence)
     if not tokens:
         return None
-    stems = [stem(t) for t in tokens]
     span = len(target)
-    for i in range(len(stems) - span + 1):
-        if tuple(stems[i : i + span]) == target:
-            return " ".join(tokens[i : i + span])
+    for i in range(len(tokens) - span + 1):
+        window = tokens[i : i + span]
+        if all(w.keys & t for w, t in zip(window, target)):
+            return " ".join(t.text for t in window)
     return None
+
+
+def pos_of(sentence: str, term: str) -> str | None:
+    """Part of speech the target carries *in this sentence*.
+
+    A multi-word phrase reports the tag of its head-most content word.
+    """
+    target = _keys(term)
+    if not target:
+        return None
+    tokens = analyze(sentence)
+    span = len(target)
+    for i in range(len(tokens) - span + 1):
+        window = tokens[i : i + span]
+        if all(w.keys & t for w, t in zip(window, target)):
+            content = [t for t in window if t.pos in CONTENT_POS]
+            return (content[-1] if content else window[-1]).pos
+    return None
+
+
+def content_words(text: str, minimum: int = 4) -> dict[str, str]:
+    """{lemma: surface} for words that could carry meaning, stopwords dropped."""
+    out: dict[str, str] = {}
+    for token in analyze(text):
+        if token.is_stop or token.pos not in CONTENT_POS or len(token.text) < minimum:
+            continue
+        out.setdefault(token.lemma.lower(), token.text)
+    return out
+
+
+# Retained so callers reading a phrase into comparison keys have one name for it.
+def phrase_keys(term: str) -> tuple[frozenset[str], ...]:
+    return tuple(_keys(term))
+
+
+_LEGACY_TOKEN = re.compile(r"[^\W\d_]+(?:[-'’][^\W\d_]+)*", re.UNICODE)

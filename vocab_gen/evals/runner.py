@@ -51,6 +51,7 @@ class Row:
     invented: list
     gives_away: bool
     giveaway_words: list
+    wrong_sense: str
     usable: bool
     # per-generation, repeated on each of its candidates
     latency: float
@@ -111,7 +112,10 @@ def run(
                 cost = cost_of(used, usage)
 
                 for i, cand in enumerate(result.candidates):
-                    g = grade_candidate(cand, case.word, result.definition, words)
+                    g = grade_candidate(
+                            cand, case.word, result.definition, words,
+                            getattr(result, 'part_of_speech', ''),
+                        )
                     rows.append(
                         Row(
                             run_id=run_id, model=used, variant=variant_name,
@@ -125,7 +129,7 @@ def run(
                             **{k: g[k] for k in (
                                 "sentence", "words", "has_target", "claimed", "verified",
                                 "reused", "no_invented_reuse", "invented", "gives_away",
-                                "giveaway_words", "usable")},
+                                "giveaway_words", "wrong_sense", "usable")},
                         )
                     )
                 on_event("done", spec, case.word, f"{latency:.1f}s")
@@ -172,7 +176,7 @@ def _error_row(run_id: str, model: str, variant: str, case: Case, error: str) ->
         run_id=run_id, model=model, variant=variant, word=case.word, pos=case.pos,
         register=case.register, index=0, sentence="", words=0, has_target=False,
         claimed=0, verified=0, reused=[], no_invented_reuse=True, invented=[],
-        gives_away=False, giveaway_words=[], usable=False, latency=0.0,
+        gives_away=False, giveaway_words=[], wrong_sense="", usable=False, latency=0.0,
         input_tokens=0, output_tokens=0, cache_read=0, cost=None, error=error,
     )
 

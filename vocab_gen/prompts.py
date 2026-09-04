@@ -75,6 +75,26 @@ is still worth having if the sentence reads well.
 sentence redundant and the card ambiguous.
 - Only list a word in `reused` if it actually appears in that sentence."""
 
+# Between the two. Keeps the domain-overlap bar that makes a reuse worth having,
+# but removes the "rather reuse nothing" clause, which the measured run suggests
+# is taken as an easy out: permissive reuse doubled the reuse rate, so the
+# capability is there and the strict wording is what suppresses it.
+REUSE_BALANCED = """\
+Reusing the learner's known words:
+
+- Reuse ONE or TWO known words per sentence. The test is whether the word shares the \
+sentence's subject matter, register or situation — whether a good writer might have reached \
+for it here, not merely whether it is used correctly.
+- Search the list properly before concluding that nothing fits. Most subjects can be steered \
+towards one of these words without strain, and across your candidates most should carry one. \
+Choosing the sentence first and then looking is what makes a pairing hard to find; consider \
+the word first and build the scene around it.
+- If a word would have to be bent to fit — wrong register, wrong era, wrong subject — leave \
+it out and let the sentence stand on its own. A forced pairing is worse than none.
+- Never reuse a known word that is a synonym or near-synonym of the target — it makes the \
+sentence redundant and the card ambiguous.
+- Only list a word in `reused` if it actually appears in that sentence."""
+
 DEFINITIONS = """\
 The definition bullets: terse and plain, the way someone writes for their own recall. One \
 short clause is often enough ("Unyielding."; "A process that can't be stopped."). Add a \
@@ -125,6 +145,17 @@ VARIANTS: dict[str, PromptVariant] = {
         ),
         blocks=(ROLE, WRITING, REUSE_PERMISSIVE, DEFINITIONS),
         relatedness=False,
+    ),
+    "balanced-reuse": PromptVariant(
+        name="balanced-reuse",
+        hypothesis=(
+            "Baseline reuses in only 33% of sentences; permissive reaches 65% but "
+            "loses 0.70 naturalness. This keeps the domain-overlap bar, drops the "
+            "'rather reuse nothing' escape, and tells the model to pick the word "
+            "before building the scene. Predicts reuse above baseline with "
+            "naturalness within noise of it."
+        ),
+        blocks=(ROLE, WRITING, REUSE_BALANCED, DEFINITIONS),
     ),
     "no-glosses": PromptVariant(
         name="no-glosses",

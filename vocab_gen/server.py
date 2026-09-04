@@ -166,6 +166,12 @@ function render(data) {
       m.textContent = 'does not use the target word at all — unusable';
       card.appendChild(m);
     }
+    if (c.wrong_sense) {
+      const w = document.createElement('div');
+      w.className = 'giveaway';
+      w.textContent = 'used as ' + c.wrong_sense + ', not the sense on the card';
+      card.appendChild(w);
+    }
     if (c.giveaway && c.giveaway.length) {
       const g = document.createElement('div');
       g.className = 'giveaway';

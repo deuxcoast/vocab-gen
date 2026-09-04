@@ -12,6 +12,14 @@ cd ~/deuxcoast/vocab-gen
 uv sync
 ```
 
+spaCy and its `en_core_web_sm` model are pinned dependencies, so `uv sync` installs both. If
+you also installed the CLI with `uv tool install`, **re-run it after any dependency change** —
+the tool venv is separate from the project venv:
+
+```bash
+uv tool install --editable --force ~/deuxcoast/vocab-gen
+```
+
 Put your key in `.env` (already created, gitignored, mode 600):
 
 ```
@@ -216,6 +224,12 @@ When a candidate is generated, its reuse claims are checked **inflection-aware**
 of `supplicants` is credited when the sentence writes `supplicant`) and recorded under the
 deck's own spelling, so history aggregates one word to one key instead of scattering across
 its forms.
+
+Word matching uses spaCy lemmatization rather than suffix stripping, so `supplicant` matches a
+deck entry of `supplicants` and `adumbrating` matches `adumbrated`, while derivation does not
+collapse (`strait` never credits `straitjacket`). Part-of-speech tagging adds a check nothing
+could do before: **if the card teaches the verb sense of `countenance` and the sentence uses
+the noun, the card does not reinforce what was learned** — the candidate is flagged.
 
 Candidates are also checked for **giving the answer away** — content words shared between the
 sentence and the word's own definition, which quietly turns a recall test into a freebie.

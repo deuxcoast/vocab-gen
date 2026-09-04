@@ -35,6 +35,8 @@ def _print_result(word, result, cands, model, effort, color: bool) -> None:
             print(s("     reuses: nothing (no natural fit)", "2"))
         if c["missing_target"]:
             print(s(f"     ✗ does not use {word!r} at all — unusable", "1;31"))
+        if c.get("wrong_sense"):
+            print(s(f"     ⚠ used as {c['wrong_sense']}, not the sense on the card", "31"))
         if c["giveaway"]:
             print(s(f"     ⚠ gives the answer away: {', '.join(c['giveaway'])}", "31"))
         print()

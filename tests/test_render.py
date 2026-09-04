@@ -169,15 +169,25 @@ def test_target_word_itself_is_not_a_giveaway():
     )
 
 
-def test_stopwords_and_short_words_are_ignored():
+def test_real_stopwords_are_ignored():
+    """spaCy's stopword list replaces a hand-written one; glue words never count."""
     assert (
         gives_away_answer(
-            "The person used it in a way that was very odd.",
-            ["A person who uses things in some way."],
+            "It was the one that they had, in a way.",
+            ["The one that they had, in some way."],
             "quixotic",
         )
         == []
     )
+
+
+def test_a_shared_content_word_is_flagged_even_if_generic():
+    """The old hand-written list suppressed 'person'; it is a content word and
+    a genuine overlap, so flagging it is the more honest behaviour."""
+    hits = gives_away_answer(
+        "The person spoke.", ["A person who does this."], "quixotic"
+    )
+    assert [h.lower() for h in hits] == ["person"]
 
 
 from vocab_gen.render import unknown_claims
@@ -260,3 +270,38 @@ def test_prepare_strips_markdown_before_checking():
     out = prepare(r, "obdurate", DECK)[0]
     assert out["missing_target"] is False
     assert "**" not in out["front_html"]
+
+
+# --- sense checking, which the stemmer could not do -------------------------
+
+from vocab_gen.render import wrong_sense
+
+
+def test_flags_a_noun_used_where_the_card_teaches_a_verb():
+    """A deck entry for the verb 'countenance' is not reinforced by the noun."""
+    assert wrong_sense("His countenance darkened.", "countenance", "verb") == "NOUN"
+
+
+def test_accepts_the_sense_the_card_teaches():
+    assert wrong_sense("She would not countenance it.", "countenance", "verb") is None
+    assert wrong_sense("His countenance darkened.", "countenance", "noun") is None
+
+
+def test_adjective_and_adverb_are_distinguished():
+    assert wrong_sense("He answered peremptorily.", "peremptorily", "adjective") == "ADV"
+
+
+def test_unrecognised_part_of_speech_is_not_judged():
+    assert wrong_sense("It was sui generis.", "sui generis", "phrase") is None
+    assert wrong_sense("The judge was obdurate.", "obdurate", "") is None
+
+
+def test_absent_target_is_not_a_sense_error():
+    """Missing the word entirely is a different, harder failure."""
+    assert wrong_sense("Nothing relevant.", "obdurate", "adjective") is None
+
+
+def test_prepare_reports_the_sense_check():
+    r = _R([_C("The governor remained obdurate.", "obdurate")])
+    r.part_of_speech = "adjective"
+    assert prepare(r, "obdurate", DECK)[0]["wrong_sense"] is None
