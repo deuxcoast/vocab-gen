@@ -7,6 +7,8 @@ this module deliberately does not know about.
 from __future__ import annotations
 
 import os
+import random
+import time
 
 from pydantic import BaseModel, Field
 
@@ -214,13 +216,17 @@ def generate(
 
     provider = build(provider_name)
     try:
-        completion = provider.complete(
-            model=model_id,
-            system=build_system(words),
-            user=build_user_message(word, n, prefer, avoid, kept),
-            schema_model=Generation,
-            max_tokens=MAX_TOKENS_BY_EFFORT.get(effort, 4000),
-            effort=effort,
+        completion = _with_retries(
+            provider_name,
+            model_id,
+            lambda: provider.complete(
+                model=model_id,
+                system=build_system(words),
+                user=build_user_message(word, n, prefer, avoid, kept),
+                schema_model=Generation,
+                max_tokens=MAX_TOKENS_BY_EFFORT.get(effort, 4000),
+                effort=effort,
+            ),
         )
     except ProviderError as exc:
         raise SystemExit(str(exc)) from None
@@ -238,6 +244,41 @@ def generate(
             f"(stop_reason={completion.stop_reason}, mode={completion.structured})."
         )
     return completion.parsed, completion.usage, spec, effort
+
+
+RATE_LIMIT_RETRIES = 5
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    """A 429 that is about throughput, not an empty wallet."""
+    if getattr(exc, "status_code", None) != 429 and "RateLimit" not in type(exc).__name__:
+        return False
+    body = str(exc).lower()
+    return not any(
+        phrase in body
+        for phrase in ("insufficient balance", "no resource package", "recharge",
+                       "arrears", "billing")
+    )
+
+
+def _with_retries(provider: str, model: str, call):
+    """Back off through rate limiting rather than dropping the request.
+
+    Vendor SDKs retry a couple of times by default, which is not enough on
+    accounts with low throughput limits — an eval run lost 14 of 20 cases for
+    one provider this way, and silently biased its sample to whichever cases
+    happened to fall outside the limit window.
+    """
+    delay = 2.0
+    for attempt in range(RATE_LIMIT_RETRIES):
+        try:
+            return call()
+        except Exception as exc:
+            if not _is_rate_limit(exc) or attempt == RATE_LIMIT_RETRIES - 1:
+                raise
+            time.sleep(delay + random.uniform(0, 1))
+            delay *= 2
+    raise RuntimeError("unreachable")
 
 
 def _explain(provider: str, model: str, exc: Exception) -> str:

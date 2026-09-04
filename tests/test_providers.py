@@ -446,3 +446,62 @@ def test_no_retry_for_providers_already_using_json_object(monkeypatch):
     out = _complete(OpenAICompatProvider(config_for("zhipu")))
     assert len(calls) == 1  # already the weaker mode; nothing to fall back to
     assert out.parsed is None
+
+
+# --- rate-limit resilience ---------------------------------------------------
+
+
+def test_rate_limits_are_retried(monkeypatch):
+    from vocab_gen.generate import _with_retries
+
+    monkeypatch.setattr("vocab_gen.generate.time.sleep", lambda _s: None)
+    attempts = []
+
+    class Limited(Exception):
+        status_code = 429
+
+    def call():
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise Limited("Too many requests")
+        return "ok"
+
+    assert _with_retries("moonshot", "m", call) == "ok"
+    assert len(attempts) == 3
+
+
+def test_billing_429_is_not_retried(monkeypatch):
+    """Backing off against an empty wallet just wastes time."""
+    from vocab_gen.generate import _with_retries
+
+    monkeypatch.setattr("vocab_gen.generate.time.sleep", lambda _s: None)
+    attempts = []
+
+    class Broke(Exception):
+        status_code = 429
+
+    def call():
+        attempts.append(1)
+        raise Broke("Insufficient balance or no resource package. Please recharge.")
+
+    with pytest.raises(Broke):
+        _with_retries("zhipu", "glm", call)
+    assert len(attempts) == 1
+
+
+def test_retries_give_up_eventually(monkeypatch):
+    from vocab_gen.generate import RATE_LIMIT_RETRIES, _with_retries
+
+    monkeypatch.setattr("vocab_gen.generate.time.sleep", lambda _s: None)
+    attempts = []
+
+    class Limited(Exception):
+        status_code = 429
+
+    def call():
+        attempts.append(1)
+        raise Limited("Too many requests")
+
+    with pytest.raises(Limited):
+        _with_retries("moonshot", "m", call)
+    assert len(attempts) == RATE_LIMIT_RETRIES
