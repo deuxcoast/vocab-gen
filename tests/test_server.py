@@ -9,6 +9,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from vocab_gen import server as server_mod
+from vocab_gen.collection import VocabWord
 from vocab_gen.history import History
 
 
@@ -29,7 +30,9 @@ class FakeResult:
 def stub_generate(result):
     """Match generate()'s signature in one place, so it drifts in one place."""
 
-    def _stub(word, words, n=3, model=None, prefer=None, avoid=None, effort=None):
+    def _stub(
+        word, words, n=3, model=None, prefer=None, avoid=None, effort=None, kept=None
+    ):
         return result, None, "test-model", "low"
 
     return _stub
@@ -37,10 +40,19 @@ def stub_generate(result):
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
+    # Redirect history to a temp file, but keep real load/save semantics so a
+    # save made by the handler is visible to a later load.
+    real_load = History.load.__func__
     monkeypatch.setattr(
-        History, "load", classmethod(lambda cls, path=None: History(tmp_path / "u.json"))
+        History,
+        "load",
+        classmethod(lambda cls, path=None: real_load(cls, tmp_path / "u.json")),
     )
-    monkeypatch.setattr(server_mod, "extract_terms", lambda **kw: ["zephyr", "ziggurat"])
+    monkeypatch.setattr(
+        server_mod,
+        "extract_vocab",
+        lambda **kw: [VocabWord("zephyr"), VocabWord("ziggurat")],
+    )
     monkeypatch.setattr("vocab_gen.generate.generate", stub_generate(FakeResult()))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server_mod._handler("General", None))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -110,3 +122,20 @@ def test_unknown_route_404s(client):
 def test_response_reports_the_model_used(client):
     _, data = _post(client + "/api/generate", {"word": "nexus", "n": 1})
     assert data["model"] == "test-model/low"
+
+
+def test_choose_records_the_kept_candidate(client, tmp_path):
+    """Copying a candidate in the UI is the signal that it was kept."""
+    status, _ = _post(
+        client + "/api/choose",
+        {"word": "nexus", "sentence": "The nexus near the strait.", "reused": ["strait"]},
+    )
+    assert status == 200
+    kept = History.load(tmp_path / "u.json").recent_kept()
+    assert kept and kept[-1]["target"] == "nexus"
+    assert kept[-1]["reused"] == ["strait"]
+
+
+def test_giveaway_is_surfaced_to_the_page(client):
+    _, data = _post(client + "/api/generate", {"word": "nexus", "n": 1})
+    assert "giveaway" in data["candidates"][0]

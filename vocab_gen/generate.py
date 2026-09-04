@@ -159,9 +159,10 @@ def generate(
     words: list[str],
     n: int = 3,
     model: str | None = None,
-    prefer: list[str] | None = None,
+    prefer=None,
     avoid: list[str] | None = None,
     effort: str | None = None,
+    kept: list[dict] | None = None,
 ) -> tuple[Generation, object, str, str | None]:
     """Return the parsed generation, the usage object, the model, and the effort used."""
     model = resolve_model(model)
@@ -177,7 +178,7 @@ def generate(
 
     client = anthropic.Anthropic()
     try:
-        response = _call(client, word, words, n, model, prefer, avoid, effort)
+        response = _call(client, word, words, n, model, prefer, avoid, effort, kept)
     except anthropic.AuthenticationError:
         raise SystemExit(
             "Anthropic rejected the API key (401).\n"
@@ -216,7 +217,11 @@ def generate(
 
 
 def build_user_message(
-    word: str, n: int, prefer: list[str] | None = None, avoid: list[str] | None = None
+    word: str,
+    n: int,
+    prefer=None,
+    avoid: list[str] | None = None,
+    kept: list[dict] | None = None,
 ) -> str:
     """The variable half of the prompt.
 
@@ -237,12 +242,37 @@ def build_user_message(
             "the unmistakably right choice: " + ", ".join(avoid) + ".",
         ]
     if prefer:
+        lines = []
+        for w in prefer:
+            gloss = (w.gloss or "").strip()
+            if len(gloss) > 90:
+                gloss = gloss[:87].rstrip() + "..."
+            lines.append(f"- {w.term}" + (f" — {gloss}" if gloss else ""))
         parts += [
             "",
-            "These known words have rarely or never appeared. If any of them fits a "
-            "sentence naturally, favour it — but the rule above still holds: reusing "
-            "nothing beats forcing a word in. " + ", ".join(prefer) + ".",
+            "These known words have rarely or never appeared on a card, and are due "
+            "to resurface. Each is given with the learner's own definition, which is "
+            "the sense they actually learned — use that sense, not another one the "
+            "word might carry.",
+            "",
+            "\n".join(lines),
+            "",
+            "Pick from this list only where the word's subject matter genuinely "
+            "overlaps with the sentence you are writing — a shared domain, register, "
+            "or situation. Do not reach for one just because it is on the list: "
+            "reusing nothing still beats forcing a word in.",
         ]
+    if kept:
+        examples = "\n".join(f"- {k['sentence']}" for k in kept if k.get("sentence"))
+        if examples:
+            parts += [
+                "",
+                "For calibration, here are sentences this learner chose to keep from "
+                "earlier batches. Match their register and density; do not reuse their "
+                "subject matter.",
+                "",
+                examples,
+            ]
     return "\n".join(parts)
 
 
@@ -252,15 +282,21 @@ def _call(
     words: list[str],
     n: int,
     model: str,
-    prefer: list[str] | None = None,
+    prefer=None,
     avoid: list[str] | None = None,
     effort: str | None = None,
+    kept: list[dict] | None = None,
 ):
     return client.messages.parse(
         model=model,
         max_tokens=MAX_TOKENS_BY_EFFORT.get(effort, 4000),
         system=build_system(words),
         output_format=Generation,
-        messages=[{"role": "user", "content": build_user_message(word, n, prefer, avoid)}],
+        messages=[
+            {
+                "role": "user",
+                "content": build_user_message(word, n, prefer, avoid, kept),
+            }
+        ],
         **({"output_config": {"effort": effort}} if effort else {}),
     )

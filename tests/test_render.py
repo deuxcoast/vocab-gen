@@ -46,7 +46,7 @@ def test_back_html_matches_card_format():
 
 from vocab_gen.render import verified_reuse
 
-KNOWN = {"zephyr", "strait", "parsimonious", "cinéma vérité", "pied-à-terre"}
+KNOWN = ["zephyr", "strait", "parsimonious", "cinéma vérité", "pied-à-terre"]
 
 
 def test_credits_a_word_that_is_really_there():
@@ -81,3 +81,98 @@ def test_accented_and_hyphenated_terms_match():
 
 def test_hyphen_boundary_is_respected():
     assert verified_reuse("A zephyr-like breeze.", ["zephyr"], KNOWN) == ["zephyr"]
+
+
+# --- inflection-aware reuse -------------------------------------------------
+
+DECK = ["supplicants", "chasms", "adumbrated", "strait", "sluice gates", "zephyr"]
+
+
+def test_credits_an_inflected_form_of_a_deck_word():
+    """Deck has 'supplicants'; the sentence writes 'supplicant'."""
+    assert verified_reuse("A lone supplicant waited.", ["supplicant"], DECK) == [
+        "supplicants"
+    ]
+
+
+def test_returns_the_decks_spelling_not_the_sentences():
+    """History must aggregate one word to one key, not scatter by inflection."""
+    assert verified_reuse("He adumbrates the plan.", ["adumbrates"], DECK) == [
+        "adumbrated"
+    ]
+
+
+def test_multiword_phrase_inflection():
+    assert verified_reuse("They opened the sluice gate.", ["sluice gate"], DECK) == [
+        "sluice gates"
+    ]
+
+
+def test_still_rejects_a_word_not_in_the_sentence():
+    assert verified_reuse("Nothing here.", ["zephyr"], DECK) == []
+
+
+def test_still_rejects_a_word_not_in_the_deck():
+    assert verified_reuse("A bogus mawkishness.", ["mawkishness"], DECK) == []
+
+
+def test_does_not_credit_a_substring_word():
+    assert verified_reuse("He wore a straitjacket.", ["strait"], DECK) == []
+
+
+def test_deduplicates_repeated_claims():
+    assert verified_reuse("Chasms and chasms.", ["chasms", "chasm"], DECK) == ["chasms"]
+
+
+# --- answer giveaway --------------------------------------------------------
+
+from vocab_gen.render import gives_away_answer
+
+
+def test_flags_a_definition_word_appearing_in_the_sentence():
+    hits = gives_away_answer(
+        "The union chief was unyielding, and remained obdurate for weeks.",
+        ["Unyielding; refusing to change."],
+        "obdurate",
+    )
+    assert "unyielding" in [h.lower() for h in hits]
+
+
+def test_flags_an_inflected_definition_word():
+    hits = gives_away_answer(
+        "His yielding manner surprised them; he was not obdurate.",
+        ["Unyielding."],
+        "obdurate",
+    )
+    assert hits == [] or "yielding" not in [h.lower() for h in hits]
+
+
+def test_clean_sentence_has_no_giveaway():
+    assert (
+        gives_away_answer(
+            "The board offered concessions, but the chief remained obdurate.",
+            ["Unyielding; refusing to change."],
+            "obdurate",
+        )
+        == []
+    )
+
+
+def test_target_word_itself_is_not_a_giveaway():
+    assert (
+        gives_away_answer(
+            "He remained obdurate.", ["Obdurate means unyielding."], "obdurate"
+        )
+        == []
+    )
+
+
+def test_stopwords_and_short_words_are_ignored():
+    assert (
+        gives_away_answer(
+            "The person used it in a way that was very odd.",
+            ["A person who uses things in some way."],
+            "quixotic",
+        )
+        == []
+    )

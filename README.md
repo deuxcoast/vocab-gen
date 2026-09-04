@@ -133,10 +133,29 @@ and leaves the cached word list fully intact.
 Measured with `frigate` and nine other words seeded as heavily used: **9 of 12 reuses came
 from the rarely-used pool, 0 from the avoid list, and `frigate` appeared zero times.**
 
+Steering also uses what Anki knows about your recall. Each word carries a *shakiness* score
+built from lapses and current interval, and the preferred pool is sampled weighted by it — so
+a word you keep failing is likelier to resurface than one you have never missed. Measured over
+24 sentences: reused words averaged **3.72 shakiness against a deck baseline of 2.45**.
+
+When a candidate is generated, its reuse claims are checked **inflection-aware** (a deck entry
+of `supplicants` is credited when the sentence writes `supplicant`) and recorded under the
+deck's own spelling, so history aggregates one word to one key instead of scattering across
+its forms.
+
+Candidates are also checked for **giving the answer away** — content words shared between the
+sentence and the word's own definition, which quietly turns a recall test into a freebie.
+Flagged rather than dropped, since short overlaps are often innocent. About 1 in 5 candidates
+trips this.
+
 ```bash
-vocab --stats          # how much of the deck has actually appeared
+vocab --stats          # coverage, plus the shakiest words in your deck
 vocab --no-history     # don't steer, don't record
 ```
+
+After printing candidates the CLI asks which one you kept (skippable, TTY only); in the web UI
+copying a candidate records it. Those kept sentences feed back in as calibration examples on
+later runs.
 
 Among equally-unused words the preferred set is *sampled*, not sliced alphabetically —
 otherwise it would just trade one systematic bias for another.

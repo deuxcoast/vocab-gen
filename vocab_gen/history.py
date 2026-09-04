@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 VERSION = 1
+KEEP_LIMIT = 40  # how many chosen sentences to retain
 _LOCK = threading.Lock()
 
 
@@ -34,9 +35,15 @@ def default_path() -> Path:
 
 
 class History:
-    def __init__(self, path: Path, words: dict[str, dict] | None = None):
+    def __init__(
+        self,
+        path: Path,
+        words: dict[str, dict] | None = None,
+        kept: list[dict] | None = None,
+    ):
         self.path = path
         self.words: dict[str, dict] = words or {}
+        self.kept: list[dict] = kept or []
 
     # ---------------------------------------------------------------- io ---
     @classmethod
@@ -45,13 +52,14 @@ class History:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if raw.get("version") == VERSION and isinstance(raw.get("words"), dict):
-                return cls(path, raw["words"])
+                kept = raw.get("kept")
+                return cls(path, raw["words"], kept if isinstance(kept, list) else [])
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             pass
         return cls(path)  # a corrupt or missing file is not worth failing over
 
     def save(self) -> None:
-        payload = {"version": VERSION, "words": self.words}
+        payload = {"version": VERSION, "words": self.words, "kept": self.kept[-KEEP_LIMIT:]}
         with _LOCK:  # the web UI is threaded
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=self.path.parent, suffix=".tmp")
@@ -66,31 +74,49 @@ class History:
     # ------------------------------------------------------------ steering ---
     def plan(
         self,
-        words: list[str],
+        vocab,
         n_prefer: int = 24,
         n_avoid: int = 12,
         rng: random.Random | None = None,
-    ) -> tuple[list[str], list[str]]:
+    ):
         """Return (prefer, avoid).
 
-        `prefer` is sampled from the least-used words. Sampling matters: most of
-        the deck sits at zero uses, and taking the alphabetically-first slice of
-        that pool would just swap one systematic bias for another.
+        `prefer` is drawn from the least-surfaced words, then sampled *weighted
+        by shakiness* — so a word you keep lapsing on is likelier to come up
+        than one you have never missed. Sampling rather than ranking still
+        matters: most of the deck sits at zero uses, and taking a deterministic
+        slice would trade one systematic bias for another.
         """
         rng = rng or random.Random()
-        seen = {k: v for k, v in self.words.items() if k in {w.lower() for w in words}}
+        by_term = {w.term: w for w in vocab}
+        lowered = {t.lower() for t in by_term}
+        seen = {k: v for k, v in self.words.items() if k in lowered}
 
-        by_word = {w: seen.get(w.lower(), {}).get("n", 0) for w in words}
-        fewest = min(by_word.values()) if by_word else 0
-        pool = [w for w, n in by_word.items() if n == fewest]
-        if len(pool) < n_prefer:  # top up from the next-least-used tier
-            rest = sorted((w for w in words if w not in pool), key=lambda w: by_word[w])
-            pool = pool + rest[: n_prefer - len(pool)]
-        prefer = rng.sample(pool, min(n_prefer, len(pool)))
+        uses = {t: seen.get(t.lower(), {}).get("n", 0) for t in by_term}
+        fewest = min(uses.values()) if uses else 0
+        pool = [t for t, n in uses.items() if n == fewest]
+        if len(pool) < n_prefer:
+            rest = sorted((t for t in by_term if t not in pool), key=lambda t: uses[t])
+            pool += rest[: n_prefer - len(pool)]
+
+        prefer_terms = _weighted_sample(
+            pool, [by_term[t].shakiness for t in pool], min(n_prefer, len(pool)), rng
+        )
+        prefer = sorted((by_term[t] for t in prefer_terms), key=lambda w: w.term.lower())
 
         recent = sorted(seen.items(), key=lambda kv: kv[1].get("last", 0), reverse=True)
-        avoid = [w for w, _ in recent[:n_avoid]]
-        return sorted(prefer, key=str.lower), sorted(avoid, key=str.lower)
+        avoid = [t for t, _ in recent[:n_avoid]]
+        return prefer, sorted(avoid, key=str.lower)
+
+    def record_kept(self, target: str, sentence: str, reused: list[str]) -> None:
+        """Remember a candidate the user actually chose."""
+        self.kept.append(
+            {"target": target, "sentence": sentence, "reused": reused, "at": time.time()}
+        )
+        del self.kept[:-KEEP_LIMIT]
+
+    def recent_kept(self, n: int = 4) -> list[dict]:
+        return self.kept[-n:]
 
     def record(self, used: list[str]) -> None:
         now = time.time()
@@ -114,3 +140,23 @@ class History:
             "uses": total_uses,
             "top": top,
         }
+
+
+def _weighted_sample(items: list, weights: list[float], k: int, rng: random.Random) -> list:
+    """Sample k distinct items with probability proportional to weight."""
+    pool = list(zip(items, weights))
+    out = []
+    for _ in range(min(k, len(pool))):
+        total = sum(w for _, w in pool)
+        if total <= 0:
+            out.extend(i for i, _ in pool[:k - len(out)])
+            break
+        r = rng.uniform(0, total)
+        upto = 0.0
+        for idx, (item, weight) in enumerate(pool):
+            upto += weight
+            if upto >= r:
+                out.append(item)
+                pool.pop(idx)
+                break
+    return out
