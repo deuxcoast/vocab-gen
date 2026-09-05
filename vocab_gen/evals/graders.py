@@ -21,7 +21,12 @@ HARD_GATES = ("has_target", "no_invented_reuse")
 
 
 def grade_candidate(
-    candidate, word: str, definition: list[str], deck: list[str], pos: str = ""
+    candidate,
+    word: str,
+    definition: list[str],
+    deck: list[str],
+    pos: str = "",
+    memory: dict | None = None,
 ) -> dict:
     sentence = strip_markdown(candidate.sentence)
     surface = strip_markdown(candidate.surface_form)
@@ -34,7 +39,17 @@ def grade_candidate(
     present = match_span(sentence, word) or match_span(sentence, surface)
     sense = wrong_sense(sentence, word, pos)
 
+    # How well-targeted the reuse was: the mean probability that the learner had
+    # forgotten the words this sentence brought back. Without this, changing how
+    # words are chosen cannot be measured at all — the other metrics only see
+    # what happened to the sentence.
+    targeting = None
+    if memory and verified:
+        scores = [memory[t.lower()] for t in verified if t.lower() in memory]
+        targeting = sum(scores) / len(scores) if scores else None
+
     return {
+        "targeting": targeting,
         "sentence": sentence,
         "words": len(sentence.split()),
         "has_target": present is not None,
@@ -68,4 +83,8 @@ def summarise(rows: list[dict]) -> dict:
         "giveaway_rate": sum(r["gives_away"] for r in rows) / n,
         "wrong_sense_rate": sum(bool(r.get("wrong_sense")) for r in rows) / n,
         "mean_words": sum(r["words"] for r in rows) / n,
+        "targeting": (
+            sum(r["targeting"] for r in rows if r.get("targeting") is not None)
+            / max(sum(1 for r in rows if r.get("targeting") is not None), 1)
+        ),
     }

@@ -10,8 +10,11 @@ Everything here is read-only. The live collection is never opened or modified.
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import re
+import time
 import shutil
 import sqlite3
 import tempfile
@@ -104,6 +107,13 @@ def terms_in_html(html: str) -> list[str]:
     return parser.terms
 
 
+# When a card carries no FSRS state — new, or scheduled before FSRS was enabled
+# — its forgetting probability is estimated instead. Anchored near the observed
+# mean so an unknown card is neither favoured nor buried.
+UNKNOWN_FORGETTING = 0.05
+FORGETTING_FLOOR = 0.002  # never exactly zero, or a word could never be drawn
+
+
 @dataclass(frozen=True)
 class VocabWord:
     """A deck word plus what Anki knows about how well it is actually known."""
@@ -113,25 +123,65 @@ class VocabWord:
     lapses: int = 0
     ivl: int = 0  # current interval in days; 0 means new or relearning
     reps: int = 0
+    # FSRS memory state, straight from Anki. Absent on cards it has not scheduled.
+    stability: float = 0.0  # days until recall falls to 90%
+    difficulty: float = 0.0  # 1-10; how hard this card is for this learner
+    decay: float = 0.0  # per-card shape of the forgetting curve
+    last_review: float = 0.0  # unix seconds
+
+    @property
+    def has_memory_state(self) -> bool:
+        return self.stability > 0 and self.decay > 0 and self.last_review > 0
+
+    def retrievability(self, now: float | None = None) -> float | None:
+        """Probability of recalling this word right now, per FSRS.
+
+        Stability is defined as the interval at which recall falls to 90%, so
+        the factor is whatever makes R(S) equal 0.9 for this card's decay:
+
+            R(t) = (1 + F * t/S) ** -decay,  F = 0.9 ** (-1/decay) - 1
+
+        Returns None when Anki has not scheduled the card, rather than guessing.
+        """
+        if not self.has_memory_state:
+            return None
+        elapsed = max(0.0, ((now or time.time()) - self.last_review) / 86400.0)
+        factor = 0.9 ** (-1.0 / self.decay) - 1.0
+        return (1.0 + factor * elapsed / self.stability) ** (-self.decay)
 
     @property
     def shakiness(self) -> float:
-        """How much this word still needs reinforcement. Higher is shakier.
+        """Probability this word has been forgotten. Higher needs reinforcement.
 
-        Lapses dominate: forgetting a card you have already learned is the
-        clearest signal it has not stuck. A short interval is a weaker hint that
-        it is still bedding in. Never-studied cards score low on purpose — they
-        are already scheduled to come up on their own.
+        Taken from FSRS where Anki has it — a memory model fitted to this
+        learner's own review history beats any hand-rolled proxy. Where it does
+        not, lapses and interval stand in, on the same 0-1 scale so the two
+        kinds of word can be weighed against each other.
         """
-        score = 1.0 + 2.0 * self.lapses
+        r = self.retrievability()
+        if r is not None:
+            return max(1.0 - r, FORGETTING_FLOOR)
+        estimate = UNKNOWN_FORGETTING + 0.03 * self.lapses
         if 0 < self.ivl <= 21:
-            score += 1.5
-        elif 21 < self.ivl <= 60:
-            score += 0.5
-        return score
+            estimate += 0.03
+        return max(min(estimate, 0.5), FORGETTING_FLOOR)
 
 
 _TAGS = re.compile(r"<[^>]+>")
+
+
+def _memory_state(data: str | None) -> tuple[float, float, float, float]:
+    """(stability, difficulty, decay, last_review) from Anki's per-card blob."""
+    try:
+        d = json.loads(data or "{}")
+        return (
+            float(d.get("s") or 0.0),
+            float(d.get("d") or 0.0),
+            float(d.get("decay") or 0.0),
+            float(d.get("lrt") or 0.0),
+        )
+    except (ValueError, TypeError):
+        return (0.0, 0.0, 0.0, 0.0)
 
 
 def html_to_text(html: str) -> str:
@@ -194,7 +244,7 @@ def extract_vocab(
     with snapshot(profile) as conn:
         rows = conn.execute(
             """
-            select distinct n.id, n.flds, c.lapses, c.ivl, c.reps
+            select distinct n.id, n.flds, c.lapses, c.ivl, c.reps, c.data
               from notes n
               join cards c on c.nid = n.id
               join decks d on d.id = c.did
@@ -204,23 +254,37 @@ def extract_vocab(
         ).fetchall()
 
     seen: dict[str, VocabWord] = {}
-    for _nid, flds, lapses, ivl, reps in rows:
+    for _nid, flds, lapses, ivl, reps, data in rows:
+        stability, difficulty, decay, last_review = _memory_state(data)
         fields = flds.split(FIELD_SEP)
         gloss = html_to_text(fields[1]) if len(fields) > 1 else ""
         for term in terms_in_html(fields[0]):
             key = term.lower()
             prior = seen.get(key)
             if prior is None:
-                seen[key] = VocabWord(term, gloss, lapses or 0, ivl or 0, reps or 0)
+                seen[key] = VocabWord(
+                    term, gloss, lapses or 0, ivl or 0, reps or 0,
+                    stability, difficulty, decay, last_review,
+                )
             else:
                 # The same word can sit on several notes; keep the shakiest
                 # reading of it, since that is the one worth reinforcing.
+                # The same word can sit on several notes; keep the shakiest
+                # reading of it, since that is the one worth reinforcing.
+                keep_new = prior.shakiness < VocabWord(
+                    term, gloss, lapses or 0, ivl or 0, reps or 0,
+                    stability, difficulty, decay, last_review,
+                ).shakiness
                 seen[key] = VocabWord(
                     prior.term,
                     prior.gloss or gloss,
                     max(prior.lapses, lapses or 0),
                     min(prior.ivl, ivl or 0) if prior.ivl and ivl else (prior.ivl or ivl or 0),
                     max(prior.reps, reps or 0),
+                    stability if keep_new else prior.stability,
+                    difficulty if keep_new else prior.difficulty,
+                    decay if keep_new else prior.decay,
+                    last_review if keep_new else prior.last_review,
                 )
     words = sorted(seen.values(), key=lambda w: w.term.lower())
     if exclude_offensive:

@@ -51,6 +51,7 @@ def by_model(rows: list[dict]) -> dict[str, dict]:
             "has_target_rate": _mean([r["has_target"] for r in good]),
             "reuse_rate": _mean([bool(r["verified"]) for r in good]),
             "reuses_per_sentence": _mean([r["verified"] for r in good]),
+            "targeting": _mean([r.get("targeting") for r in good]),
             "invented_rate": _mean([bool(r["invented"]) for r in good]),
             "giveaway_rate": _mean([r["gives_away"] for r in good]),
             "naturalness": _mean([r["naturalness"] for r in good]),
@@ -221,6 +222,7 @@ def render_paired(rows: list[dict], baseline: str = "baseline") -> str:
             ("judge_overall", "judge"),
             ("naturalness", "naturalness"),
             ("verified", "reuses/sent"),
+            ("targeting", "targeting"),
             ("gives_away", "giveaway"),
         ):
             res = paired(rows, arm, baseline, metric=metric)

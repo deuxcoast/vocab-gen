@@ -540,3 +540,36 @@ def test_batching_is_distinct_from_oversampling():
 
     assert get("baseline-b2").batches == 2 and get("baseline-b2").oversample == 1
     assert get("baseline-os2").oversample == 2 and get("baseline-os2").batches == 1
+
+
+def test_targeting_scores_how_forgotten_the_reused_words_were():
+    """Without this metric, changing how words are chosen cannot be measured."""
+    from vocab_gen.evals.graders import grade_candidate
+
+    memory = {"scurrilous": 0.18, "strait": 0.01}
+    g = grade_candidate(
+        cand("The obdurate lawyer made a scurrilous attack.", "obdurate", ["scurrilous"]),
+        "obdurate", ["Unyielding."], ["scurrilous", "strait"], memory=memory,
+    )
+    assert g["targeting"] == pytest.approx(0.18)
+
+
+def test_targeting_is_none_when_nothing_was_reused():
+    from vocab_gen.evals.graders import grade_candidate
+
+    g = grade_candidate(
+        cand("The obdurate judge spoke.", "obdurate"), "obdurate", ["Unyielding."],
+        ["scurrilous"], memory={"scurrilous": 0.2},
+    )
+    assert g["targeting"] is None
+
+
+def test_targeting_averages_across_several_reuses():
+    from vocab_gen.evals.graders import grade_candidate
+
+    memory = {"scurrilous": 0.20, "strait": 0.10}
+    g = grade_candidate(
+        cand("A scurrilous attack near the strait.", "obdurate", ["scurrilous", "strait"]),
+        "obdurate", ["Unyielding."], ["scurrilous", "strait"], memory=memory,
+    )
+    assert g["targeting"] == pytest.approx(0.15)

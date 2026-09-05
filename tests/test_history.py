@@ -155,3 +155,29 @@ def test_recent_kept_returns_the_newest(tmp_path):
     for i in range(6):
         a.record_kept(f"w{i}", f"s{i}", [])
     assert [k["target"] for k in a.recent_kept(2)] == ["w4", "w5"]
+
+
+# --- FSRS-weighted selection -------------------------------------------------
+
+
+def test_selection_favours_words_the_learner_is_likely_to_have_forgotten(tmp_path):
+    """Weighting now comes from a memory model rather than a hand-rolled score."""
+    import time
+
+    fresh = [
+        VocabWord(f"solid{i}", stability=400.0, decay=0.135, last_review=time.time())
+        for i in range(20)
+    ]
+    # One word last seen a full stability ago: recall is 90%, so 10% forgotten.
+    due = VocabWord(
+        "atavism", stability=10.0, decay=0.135, last_review=time.time() - 10 * 86400
+    )
+    deck = fresh + [due]
+    a = h(tmp_path)
+
+    picked = sum(
+        "atavism" in {w.term for w in a.plan(deck, n_prefer=3, rng=random.Random(s))[0]}
+        for s in range(200)
+    )
+    # Uniform sampling would pick it about 3/21 = 14% of the time.
+    assert picked > 60, f"forgotten word picked only {picked}/200 times"

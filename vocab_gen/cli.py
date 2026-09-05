@@ -210,10 +210,18 @@ def main(argv: list[str] | None = None) -> int:
         withheld = held_back(deck=args.deck, profile=args.profile)
         if withheld:
             print(f"  {len(withheld)} held back from prompts: {', '.join(withheld)}")
-        shaky = sorted(vocab, key=lambda w: -w.shakiness)[:5]
-        print("\n  shakiest words in your deck (lapses / interval):")
-        for w in shaky:
-            print(f"    {w.term:20s} lapses={w.lapses} ivl={w.ivl}d")
+        with_state = sum(1 for w in vocab if w.has_memory_state)
+        print(
+            f"  {with_state} of {len(vocab)} carry FSRS memory state"
+        )
+        print("\n  most likely to have been forgotten (FSRS retrievability):")
+        for w in sorted(vocab, key=lambda w: -w.shakiness)[:6]:
+            r = w.retrievability()
+            recall = f"{r:.0%}" if r is not None else " -- "
+            print(
+                f"    {w.term:20s} recall {recall}  stability {w.stability:6.1f}d  "
+                f"lapses {w.lapses}"
+            )
         if cov["top"]:
             print("\n  most used:")
             for w, n in cov["top"]:
