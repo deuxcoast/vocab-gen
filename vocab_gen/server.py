@@ -64,7 +64,12 @@ PAGE = """<!doctype html>
   .card:hover { border-color: var(--muted); }
   .card.selected {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+    background: color-mix(in srgb, var(--accent) 7%, var(--card));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .card.selected::before {
+    content: ''; position: absolute; left: 0; top: 12%; bottom: 12%;
+    width: 3px; border-radius: 3px; background: var(--accent);
   }
   .pick {
     position: absolute; top: .9rem; right: 1rem; font: .72rem ui-monospace, monospace;
@@ -74,7 +79,11 @@ PAGE = """<!doctype html>
   .card.selected .pick { color: var(--accent); border-color: var(--accent); }
   .sendbar {
     display: flex; align-items: center; gap: .7rem; margin: 1.2rem 0 .4rem;
+    position: sticky; bottom: 0; z-index: 5;
+    background: var(--bg); padding: .7rem 0;
+    border-top: 1px solid var(--line);
   }
+  .sendbar .selinfo { font-size: .82rem; color: var(--accent); font-weight: 600; }
   .sendbar button {
     background: var(--accent); border-color: var(--accent); color: #fff;
     font-weight: 600; padding: .55rem 1rem;
@@ -130,11 +139,23 @@ let current = null;
 
 function select(i) {
   selected = i;
+  let target = null;
   document.querySelectorAll('.card[data-idx]').forEach(el => {
-    el.classList.toggle('selected', Number(el.dataset.idx) === i);
+    const on = Number(el.dataset.idx) === i;
+    el.classList.toggle('selected', on);
+    if (on) target = el;
   });
   const bar = $('#sendbar');
   if (bar) bar.hidden = (i === null);
+  const label = $('#selinfo');
+  if (label) label.textContent = (i === null) ? '' : `candidate ${i + 1} selected`;
+  // Without this you can press a number, highlight a card below the fold, and
+  // see nothing happen — which reads as the key not working. 'nearest' is a
+  // no-op when the card is already on screen, so this needs no visibility test
+  // of its own; hand-rolling one only invents a way to get it wrong.
+  // Instant, not smooth: smooth scrolling is a no-op in some contexts, and a
+  // keyboard picker wants the card there before the next keystroke anyway.
+  if (target) target.scrollIntoView({block: 'nearest'});
 }
 
 async function sendSelected(allowDuplicate) {
@@ -223,6 +244,7 @@ function render(data) {
   const out = $('#out');
   out.textContent = '';
   current = data; selected = null;
+  window.scrollTo({top: 0});
 
   data.candidates.forEach((c, i) => {
     const card = document.createElement('div');
@@ -291,12 +313,15 @@ function render(data) {
   send.id = 'send';
   send.textContent = 'Send to Anki';
   send.onclick = () => sendSelected(false);
+  const info = document.createElement('span');
+  info.className = 'selinfo';
+  info.id = 'selinfo';
   const hint = document.createElement('span');
   hint.className = 'hint';
   hint.textContent = 'press 1-9 to pick, return to send';
   const msg = document.createElement('span');
   msg.id = 'sendmsg';
-  bar.appendChild(send); bar.appendChild(hint); bar.appendChild(msg);
+  bar.appendChild(send); bar.appendChild(info); bar.appendChild(hint); bar.appendChild(msg);
   out.appendChild(bar);
 
   const h = document.createElement('h2');
