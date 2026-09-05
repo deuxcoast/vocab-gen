@@ -233,3 +233,34 @@ def test_fsrs_weighting_favours_the_overdue_word(tmp_path):
 def test_an_unknown_weighting_falls_back_to_fsrs(tmp_path):
     deck = [VocabWord("a"), VocabWord("b")]
     assert h(tmp_path).plan(deck, n_prefer=1, weighting="nonsense")[0]
+
+
+# --- the target is never offered back to the learner -------------------------
+
+
+def test_the_target_is_held_out_of_its_own_preferred_list(tmp_path):
+    """A deck can contain the word you are making a new card for."""
+    deck = DECK + [VocabWord("flagons", "A large bottle for wine.")]
+    for seed in range(20):
+        prefer, _ = h(tmp_path).plan(
+            deck, n_prefer=len(deck), rng=random.Random(seed), target="flagon"
+        )
+        assert "flagons" not in {w.term for w in prefer}, seed
+
+
+def test_holdout_is_inflection_aware_not_string_equality(tmp_path):
+    from vocab_gen.morphology import same_term
+
+    assert same_term("flagons", "flagon")
+    assert same_term("descried", "descry")
+    assert same_term("prevaricating", "prevaricate")
+    # Derivation must not collapse, or unrelated words get held out too.
+    assert not same_term("straitjacket", "strait")
+    # A phrase cannot collapse onto a single token.
+    assert not same_term("de facto", "facto")
+
+
+def test_without_a_target_nothing_is_held_out(tmp_path):
+    deck = DECK + [VocabWord("flagons")]
+    prefer, _ = h(tmp_path).plan(deck, n_prefer=len(deck), rng=random.Random(0))
+    assert "flagons" in {w.term for w in prefer}

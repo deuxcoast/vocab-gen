@@ -162,6 +162,21 @@ def phrase_keys(term: str) -> tuple[frozenset[str], ...]:
     return tuple(_keys(term))
 
 
+def same_term(a: str, b: str) -> bool:
+    """Whether two terms are the same word, allowing inflection.
+
+    Token-for-token on lemma keys, so "flagons" is "flagon" and "descried" is
+    "descry", while "de facto" cannot collapse onto a single-token term. Uses
+    the same keys as reuse detection, so a word excluded here is exactly a word
+    that would have been excluded there — and `analyze` is cached, so keying the
+    whole deck costs nothing a generation was not already paying.
+    """
+    ka, kb = phrase_keys(a), phrase_keys(b)
+    if not ka or len(ka) != len(kb):
+        return False
+    return all(x & y for x, y in zip(ka, kb))
+
+
 _LEGACY_TOKEN = re.compile(r"[^\W\d_]+(?:[-'’][^\W\d_]+)*", re.UNICODE)
 
 

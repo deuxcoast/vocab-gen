@@ -238,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     from .generate import generate
 
     history = None if args.no_history else History.load()
-    prefer, avoid = history.plan(vocab) if history else ([], [])
+    prefer, avoid = history.plan(vocab, target=args.word) if history else ([], [])
     kept = history.recent_kept() if history else []
 
     from .generate import GenerationError

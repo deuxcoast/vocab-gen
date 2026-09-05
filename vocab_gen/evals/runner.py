@@ -4,8 +4,10 @@ Two properties the results depend on:
 
 Identical prompts. The preferred and avoided word lists normally come from usage
 history and drift between calls, which would mean each model saw a different
-prompt and the comparison measured nothing. They are computed once per run from
-a fixed seed and reused for every model and case.
+prompt and the comparison measured nothing. They are computed from a fixed seed
+and memoised per (weighting, target), so every arm sharing a weighting sees a
+byte-identical prompt for a given word. The lists vary by target only because
+the target itself is held out of them.
 
 No side effects. A run never records to usage history; otherwise evaluating a
 model would change the behaviour of the tool you are evaluating.
@@ -88,15 +90,20 @@ def run(
     # Forgetting probability per word, so reuse can be scored on targeting.
     memory = {w.term.lower(): w.shakiness for w in vocab}
 
-    # Frozen per weighting, not per run. Arms that differ in how words are
-    # chosen must differ in their preferred list — that list *is* the treatment
-    # — but the seed is shared, so the only difference is the weighting and not
-    # the draw. Arms with the same weighting still see byte-identical prompts.
+    # Frozen per (weighting, target). Arms that differ in how words are chosen
+    # must differ in their preferred list — that list *is* the treatment — but
+    # the seed is shared, so the only difference is the weighting and not the
+    # draw. The target varies the list only by holding the target itself out.
     history = History.load()
-    plans = {
-        w: history.plan(vocab, rng=random.Random(seed), weighting=w)
-        for w in History.WEIGHTINGS
-    }
+    plans: dict[tuple[str, str], tuple] = {}
+
+    def plan_for(weighting: str, target: str):
+        """Memoised so arms sharing a weighting get the identical list per word."""
+        if (weighting, target) not in plans:
+            plans[(weighting, target)] = history.plan(
+                vocab, rng=random.Random(seed), weighting=weighting, target=target
+            )
+        return plans[(weighting, target)]
 
     cases = subset(n_cases)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + (f"-{label}" if label else "")
@@ -111,8 +118,10 @@ def run(
             factor = max(oversample, getattr(variant, "oversample", 1))
             rounds = getattr(variant, "batches", 1)
             arm = f"{variant_name}+os{factor}" if factor > 1 and factor != variant.oversample else variant_name
-            prefer, avoid = plans[getattr(variant, "weighting", "fsrs")]
             for case in cases:
+                prefer, avoid = plan_for(
+                    getattr(variant, "weighting", "fsrs"), case.word
+                )
                 started = time.perf_counter()
                 try:
                     outcome = generate(
