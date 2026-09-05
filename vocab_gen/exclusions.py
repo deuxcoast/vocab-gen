@@ -41,6 +41,7 @@ DEFAULT_EXCLUSIONS = frozenset(
         "gypped",
         "welshed",
         # Ethnic and racial slurs.
+        "coolie",  # in the deck; its own gloss calls it dated and offensive
         "coon",
         "wetback",
         "gook",
