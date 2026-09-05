@@ -61,9 +61,10 @@ def grade_candidate(
         "reused": verified,
         "no_invented_reuse": not invented,
         "invented": invented,
-        "gives_away": bool(giveaway),
+        # None when the definition was unusable: not assessable, not clean.
+        "gives_away": None if giveaway is None else bool(giveaway),
         "wrong_sense": sense or "",
-        "giveaway_words": giveaway,
+        "giveaway_words": giveaway or [],
         "usable": present is not None and not invented,
     }
 
@@ -73,6 +74,7 @@ def summarise(rows: list[dict]) -> dict:
     n = len(rows)
     if not n:
         return {"n": 0}
+    assessable = [r for r in rows if r.get("gives_away") is not None]
     return {
         "n": n,
         "usable_rate": sum(r["usable"] for r in rows) / n,
@@ -80,7 +82,14 @@ def summarise(rows: list[dict]) -> dict:
         "reuse_rate": sum(bool(r["verified"]) for r in rows) / n,
         "reuses_per_sentence": sum(r["verified"] for r in rows) / n,
         "invented_rate": sum(bool(r["invented"]) for r in rows) / n,
-        "giveaway_rate": sum(r["gives_away"] for r in rows) / n,
+        "giveaway_rate": (
+            sum(r["gives_away"] for r in assessable) / len(assessable)
+            if assessable
+            else None
+        ),
+        # Surfaced rather than hidden: a run with many of these is measuring
+        # giveaway on fewer candidates than its n suggests.
+        "giveaway_unassessable": n - len(assessable),
         "wrong_sense_rate": sum(bool(r.get("wrong_sense")) for r in rows) / n,
         "mean_words": sum(r["words"] for r in rows) / n,
         "targeting": (

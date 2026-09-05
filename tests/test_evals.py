@@ -573,3 +573,49 @@ def test_targeting_averages_across_several_reuses():
         "obdurate", ["Unyielding."], ["scurrilous", "strait"], memory=memory,
     )
     assert g["targeting"] == pytest.approx(0.15)
+
+
+# --- an unusable definition must not read as a clean card --------------------
+
+
+def test_junk_definition_bullets_are_dropped_at_parse_time():
+    from vocab_gen.generate import Generation
+
+    g = Generation(
+        definition=[", ", ": Dominance of one group over others.", ". "],
+        part_of_speech="noun",
+        candidates=[],
+    )
+    assert g.definition == ["Dominance of one group over others."]
+
+
+def test_a_wholly_degenerate_definition_becomes_empty_not_plausible():
+    from vocab_gen.generate import Generation
+
+    assert Generation(
+        definition=[", ", ", ", ", "], part_of_speech="noun", candidates=[]
+    ).definition == []
+
+
+def test_grade_reports_giveaway_as_unassessable_when_the_definition_is_empty():
+    from vocab_gen.evals.graders import grade_candidate, summarise
+
+    class C:
+        sentence = "The magistrate remained unmoved by the appeal."
+        surface_form = "obdurate"
+        reused = []
+
+    g = grade_candidate(C(), "obdurate", [], ["zephyr"])
+    assert g["gives_away"] is None
+    assert g["giveaway_words"] == []
+
+    # ...and the rate is computed over assessable rows only, with the rest counted.
+    rows = [
+        {"gives_away": None, "usable": True, "has_target": True, "verified": 0,
+         "invented": [], "words": 8, "targeting": None, "wrong_sense": ""},
+        {"gives_away": True, "usable": True, "has_target": True, "verified": 0,
+         "invented": [], "words": 8, "targeting": None, "wrong_sense": ""},
+    ]
+    s = summarise(rows)
+    assert s["giveaway_rate"] == 1.0  # 1 of 1 assessable, not 1 of 2
+    assert s["giveaway_unassessable"] == 1

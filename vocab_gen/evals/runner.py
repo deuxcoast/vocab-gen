@@ -54,7 +54,7 @@ class Row:
     reused: list
     no_invented_reuse: bool
     invented: list
-    gives_away: bool
+    gives_away: bool | None
     giveaway_words: list
     wrong_sense: str
     usable: bool

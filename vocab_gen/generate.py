@@ -7,11 +7,12 @@ this module deliberately does not know about.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 import random
 import time
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .prompts import BASELINE, PromptVariant, get as get_variant
 from .providers import (
@@ -138,6 +139,29 @@ class Generation(BaseModel):
     definition: list[str] = Field(
         description="One or two very short definition bullets for the target word."
     )
+    @field_validator("definition")
+    @classmethod
+    def _drop_empty_bullets(cls, bullets: list[str]) -> list[str]:
+        """Discard bullets carrying no words, and the leading-punctuation artifact.
+
+        Models sometimes return a bullet that is punctuation only — ", " or
+        ". " — or prefix a real one with a stray separator (": Dominance of one
+        group over others."). Measured on a define-only pass over the 40-word
+        golden set: 4 of 40 fully degenerate and 15 with a leading artifact on
+        qwen3.8-flash, 2 and 4 on qwen3.8-max. It survives because nothing
+        rejects it, and an empty definition then disables the giveaway check
+        rather than failing loudly.
+
+        Not raising: a good sentence with a bad definition is still worth
+        showing. The definition simply becomes empty, and gives_away_answer
+        reports "not assessable" instead of "clean".
+        """
+        cleaned = []
+        for bullet in bullets:
+            text = re.sub(r"^[^\w(]+", "", bullet).strip()
+            if re.search(r"[^\W\d_]{2,}", text):
+                cleaned.append(text)
+        return cleaned
     part_of_speech: str = Field(
         description="e.g. 'adjective', 'noun', 'transitive verb'."
     )
