@@ -72,17 +72,25 @@ class History:
                 raise
 
     # ------------------------------------------------------------ steering ---
+    WEIGHTINGS = ("fsrs", "lapses", "uniform")
+
     def plan(
         self,
         vocab,
         n_prefer: int = 24,
         n_avoid: int = 12,
         rng: random.Random | None = None,
+        weighting: str = "fsrs",
     ):
         """Return (prefer, avoid).
 
+        `weighting` chooses how the sample is biased: by FSRS retrievability,
+        by the hand-rolled score it replaced, or not at all. The last is the
+        control — if FSRS and uniform behave alike, the weighting is doing
+        nothing.
+
         `prefer` is drawn from the least-surfaced words, then sampled *weighted
-        by shakiness* — so a word you keep lapsing on is likelier to come up
+        by forgetting probability* — so a word you keep lapsing on is likelier to come up
         than one you have never missed. Sampling rather than ranking still
         matters: most of the deck sits at zero uses, and taking a deterministic
         slice would trade one systematic bias for another.
@@ -99,8 +107,14 @@ class History:
             rest = sorted((t for t in by_term if t not in pool), key=lambda t: uses[t])
             pool += rest[: n_prefer - len(pool)]
 
+        if weighting == "uniform":
+            weights = [1.0 for _ in pool]
+        elif weighting == "lapses":
+            weights = [by_term[t].legacy_shakiness for t in pool]
+        else:
+            weights = [by_term[t].shakiness for t in pool]
         prefer_terms = _weighted_sample(
-            pool, [by_term[t].shakiness for t in pool], min(n_prefer, len(pool)), rng
+            pool, weights, min(n_prefer, len(pool)), rng
         )
         prefer = sorted((by_term[t] for t in prefer_terms), key=lambda w: w.term.lower())
 

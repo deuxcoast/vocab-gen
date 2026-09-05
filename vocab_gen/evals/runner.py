@@ -88,8 +88,15 @@ def run(
     # Forgetting probability per word, so reuse can be scored on targeting.
     memory = {w.term.lower(): w.shakiness for w in vocab}
 
-    # Frozen once: every model must see the same prompt or nothing is comparable.
-    prefer, avoid = History.load().plan(vocab, rng=random.Random(seed))
+    # Frozen per weighting, not per run. Arms that differ in how words are
+    # chosen must differ in their preferred list — that list *is* the treatment
+    # — but the seed is shared, so the only difference is the weighting and not
+    # the draw. Arms with the same weighting still see byte-identical prompts.
+    history = History.load()
+    plans = {
+        w: history.plan(vocab, rng=random.Random(seed), weighting=w)
+        for w in History.WEIGHTINGS
+    }
 
     cases = subset(n_cases)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + (f"-{label}" if label else "")
@@ -104,6 +111,7 @@ def run(
             factor = max(oversample, getattr(variant, "oversample", 1))
             rounds = getattr(variant, "batches", 1)
             arm = f"{variant_name}+os{factor}" if factor > 1 and factor != variant.oversample else variant_name
+            prefer, avoid = plans[getattr(variant, "weighting", "fsrs")]
             for case in cases:
                 started = time.perf_counter()
                 try:

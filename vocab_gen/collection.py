@@ -150,6 +150,21 @@ class VocabWord:
         return (1.0 + factor * elapsed / self.stability) ** (-self.decay)
 
     @property
+    def legacy_shakiness(self) -> float:
+        """The hand-rolled score FSRS replaced, kept so the swap can be measured.
+
+        Lapses weighted heavily, a bonus for short intervals, never-studied
+        cards scored low. Plausible, but invented here rather than fitted to
+        anything. Rescaled to 0-1 so it can be swapped in as a sampling weight.
+        """
+        score = 1.0 + 2.0 * self.lapses
+        if 0 < self.ivl <= 21:
+            score += 1.5
+        elif 21 < self.ivl <= 60:
+            score += 0.5
+        return score / 12.5
+
+    @property
     def shakiness(self) -> float:
         """Probability this word has been forgotten. Higher needs reinforcement.
 
