@@ -8,6 +8,14 @@ import sys
 from .collection import extract_vocab, held_back
 from .env import load_env
 from .history import History
+from .lexicon import (
+    MIN_MARKS,
+    Marks,
+    calibration_sample,
+    deck_report,
+    frontier,
+    suggest,
+)
 from .providers import PROVIDERS, available, why_unavailable
 from .render import back_html, prepare, rank_candidates
 
@@ -124,6 +132,44 @@ def _ask_which_kept(cands: list[dict]) -> int | None:
     return idx if 0 <= idx < len(cands) else None
 
 
+def run_calibration(vocab, n: int) -> int:
+    """Ask which words are already known, and fit the frontier to the answers.
+
+    Interactive because there is no way to infer it: population prevalence puts
+    a learner in the right neighbourhood and cannot say where *they* stop. The
+    sample deliberately spans both sides of any plausible frontier.
+    """
+    if not sys.stdin.isatty():
+        print("--calibrate needs a terminal; use --known WORD... instead", file=sys.stderr)
+        return 2
+    marks = Marks.load()
+    words = calibration_sample(vocab, n=n)
+    print(f"  {len(words)} words, hardest last. y = I know it, n = I don't, s = skip, q = stop.\n")
+    asked = 0
+    for i, word in enumerate(words, 1):
+        try:
+            answer = input(f"  [{i}/{len(words)}] {word}  ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if answer.startswith("q"):
+            break
+        if answer.startswith("s") or not answer:
+            continue
+        marks.mark([word], known=answer.startswith("y"))
+        asked += 1
+    marks.save()
+    band = frontier(marks, vocab)
+    print(f"\n  {asked} answered · {len(marks)} marks in total")
+    print(f"  frontier: {band.ceiling:+.2f} ({band.source})")
+    if band.n_marks < MIN_MARKS:
+        print(f"  still below {MIN_MARKS} marks, so the deck-derived band is being used")
+    else:
+        print("  words easier than this are treated as already known")
+    print("\n  run  vocab --suggest  to see what it proposes now")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="vocab",
@@ -154,6 +200,18 @@ def main(argv: list[str] | None = None) -> int:
         "--oversample", type=int, default=1, metavar="N",
         help="generate N times as many candidates and show the best (default 1). "
         "Cheap: candidates share one call, so only the output scales.",
+    )
+    parser.add_argument(
+        "--suggest", nargs="?", type=int, const=30, default=None, metavar="N",
+        help="words worth learning next that are not in your deck (default 30)",
+    )
+    parser.add_argument(
+        "--calibrate", nargs="?", type=int, const=40, default=None, metavar="N",
+        help="mark N words known/unknown to locate your own difficulty frontier",
+    )
+    parser.add_argument(
+        "--known", nargs="+", default=None, metavar="WORD",
+        help="record words you already know, so they stop being suggested",
     )
     parser.add_argument("--usage", action="store_true", help="report token usage after generating")
     parser.add_argument(
@@ -226,6 +284,31 @@ def main(argv: list[str] | None = None) -> int:
             print("\n  most used:")
             for w, n in cov["top"]:
                 print(f"    {n:3d}  {w}")
+        return 0
+
+    if args.known is not None:
+        marks = Marks.load()
+        marks.mark(args.known, known=True)
+        marks.save()
+        print(f"  recorded {len(args.known)} known · {len(marks.known)} total")
+        return 0
+
+    if args.calibrate is not None:
+        return run_calibration(vocab, args.calibrate)
+
+    if args.suggest is not None:
+        marks = Marks.load()
+        report = deck_report(vocab, marks)
+        band = report["band"]
+        print(f"  {report['on_list']} of {report['deck']} deck words are on a curated list")
+        print(f"  band {band.floor:+.2f} to {band.ceiling:+.2f} — {band.source}"
+              + (f", {band.n_marks} marks" if band.n_marks else ""))
+        if band.n_marks < MIN_MARKS:
+            print("  this band is inferred from your deck, not measured; "
+                  "run --calibrate to fit it to you")
+        print(f"  {report['remaining']} candidates in band\n")
+        for c in suggest(vocab, marks, n=args.suggest, band=band):
+            print(f"    {c.word:<18} {c.n_lists:>2} lists   prevalence {c.prevalence:+.2f}")
         return 0
 
     if not args.word:
