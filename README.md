@@ -349,6 +349,14 @@ request but needs more attempts before one is usable is not actually cheap.
 Runs are stored as JSONL under `evals/runs/` so they can be re-analysed and compared without
 paying to regenerate them.
 
+## Running a comparison
+
+`.claude/skills/run-eval/SKILL.md` is a checklist for setting up and reading an eval
+comparison. It exists because eval infrastructure fails by producing believable numbers
+rather than by crashing — every rule in it was broken once here, and the resulting table
+looked fine. Worth reading before the first comparison, and again before trusting a close
+result.
+
 ## Tests
 
 ```bash
