@@ -301,7 +301,12 @@ def _generate_once(
     return Outcome(completion.parsed, completion.usage, spec, effort)
 
 
-RATE_LIMIT_RETRIES = 5
+RATE_LIMIT_RETRIES = 6
+# A content filter is only worth a couple of attempts. Rate limiting clears with
+# time, but a classifier scoring a fixed prompt does not change its mind: one
+# variant here failed ~96% of full requests, and six retries each simply spent
+# the account's quota on a failure that was never going to recover.
+CONTENT_FILTER_RETRIES = 2
 
 
 def _is_rate_limit(exc: Exception) -> bool:
@@ -314,6 +319,27 @@ def _is_rate_limit(exc: Exception) -> bool:
         for phrase in ("insufficient balance", "no resource package", "recharge",
                        "arrears", "billing")
     )
+
+
+def _is_content_filter(exc: Exception) -> bool:
+    """A provider-side safety classifier declining a benign prompt.
+
+    Measured on Alibaba: one prompt variant passed 10 of 10 attempts and another
+    passed 5 of 10, with nothing objectionable in either — the second simply sat
+    nearer the classifier's threshold. Left unretried this silently biases any
+    comparison to whichever requests happened through, exactly as rate limiting
+    did on an earlier run.
+    """
+    body = str(exc).lower()
+    return any(
+        phrase in body
+        for phrase in ("datainspectionfailed", "data_inspection_failed",
+                       "inappropriate content", "content_filter")
+    )
+
+
+def _is_transient(exc: Exception) -> bool:
+    return _is_rate_limit(exc) or _is_content_filter(exc)
 
 
 def _with_retries(provider: str, model: str, call):
@@ -329,7 +355,10 @@ def _with_retries(provider: str, model: str, call):
         try:
             return call()
         except Exception as exc:
-            if not _is_rate_limit(exc) or attempt == RATE_LIMIT_RETRIES - 1:
+            budget = (
+                CONTENT_FILTER_RETRIES if _is_content_filter(exc) else RATE_LIMIT_RETRIES
+            )
+            if not _is_transient(exc) or attempt >= budget - 1:
                 raise
             time.sleep(delay + random.uniform(0, 1))
             delay *= 2

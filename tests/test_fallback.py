@@ -183,3 +183,73 @@ def test_a_single_failure_titles_with_one_provider():
     exc = GenerationError("auth", "zhipu", "glm", "nope")
     assert exc.title == "zhipu"
     assert exc.as_dict()["also"] == ""
+
+
+def test_a_content_filter_rejection_is_retried(monkeypatch):
+    """Measured at ~50% on one prompt variant; unretried it biases the sample."""
+    from vocab_gen.generate import _with_retries
+
+    monkeypatch.setattr("vocab_gen.generate.time.sleep", lambda _s: None)
+    attempts = []
+
+    class Filtered(Exception):
+        status_code = 400
+
+    def call():
+        attempts.append(1)
+        if len(attempts) < 2:
+            raise Filtered(
+                "Error code: 400 - InternalError.Algo.DataInspectionFailed: "
+                "Input text data may contain inappropriate content."
+            )
+        return "ok"
+
+    assert _with_retries("dashscope", "qwen", call) == "ok"
+    assert len(attempts) == 2
+
+
+def test_an_ordinary_bad_request_is_not_retried(monkeypatch):
+    from vocab_gen.generate import _with_retries
+
+    monkeypatch.setattr("vocab_gen.generate.time.sleep", lambda _s: None)
+    attempts = []
+
+    class Bad(Exception):
+        status_code = 400
+
+    def call():
+        attempts.append(1)
+        raise Bad("max_tokens must be positive")
+
+    with pytest.raises(Bad):
+        _with_retries("dashscope", "qwen", call)
+    assert len(attempts) == 1
+
+
+def test_content_filter_gets_a_smaller_retry_budget(monkeypatch):
+    """A classifier scoring a fixed prompt will not change its mind; retrying it
+    as hard as a rate limit just spends quota on a failure that cannot recover."""
+    from vocab_gen.generate import CONTENT_FILTER_RETRIES, RATE_LIMIT_RETRIES, _with_retries
+
+    assert CONTENT_FILTER_RETRIES < RATE_LIMIT_RETRIES
+    monkeypatch.setattr("vocab_gen.generate.time.sleep", lambda _s: None)
+    attempts = []
+
+    class Filtered(Exception):
+        status_code = 400
+
+    def call():
+        attempts.append(1)
+        raise Filtered("DataInspectionFailed: Input text data may contain inappropriate content.")
+
+    with pytest.raises(Filtered):
+        _with_retries("dashscope", "qwen", call)
+    assert len(attempts) == CONTENT_FILTER_RETRIES
+
+
+def test_an_exhausted_quota_is_billing_not_a_bad_key():
+    """Alibaba returns 403 for an exhausted free tier; 'check your key' is wrong."""
+    exc = make(403, name="PermissionDeniedError",
+               body="The free quota has been exhausted. To continue accessing the model "
+                    "on a paid basis, please complete your payment information")
+    assert classify(exc) == "balance"

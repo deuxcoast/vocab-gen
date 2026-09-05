@@ -42,6 +42,29 @@ GOLDEN: tuple[Case, ...] = (
     Case("descry", "verb", "concrete"),
     Case("de facto", "phrase", "abstract"),
     Case("tour de force", "phrase", "abstract"),
+    # Appended, never reordered: the first twenty remain a prefix, so subset(20)
+    # still reproduces the set earlier runs used. Weighted towards concrete
+    # nouns, which the original twenty were short of at 15 abstract to 5.
+    Case("reliquary", "noun", "concrete"),
+    Case("portcullis", "noun", "concrete"),
+    Case("bandolier", "noun", "concrete"),
+    Case("ossuary", "noun", "concrete"),
+    Case("samovar", "noun", "concrete"),
+    Case("trebuchet", "noun", "concrete"),
+    Case("buttress", "noun", "concrete"),
+    Case("cairn", "noun", "concrete"),
+    Case("culvert", "noun", "concrete"),
+    Case("flagon", "noun", "concrete"),
+    Case("obloquy", "noun", "abstract"),
+    Case("asperity", "noun", "abstract"),
+    Case("rectitude", "noun", "abstract"),
+    Case("venality", "noun", "abstract"),
+    Case("arrogate", "verb", "abstract"),
+    Case("prevaricate", "verb", "abstract"),
+    Case("traduce", "verb", "abstract"),
+    Case("winnow", "verb", "concrete"),
+    Case("lambent", "adjective", "concrete"),
+    Case("feckless", "adjective", "abstract"),
 )
 
 

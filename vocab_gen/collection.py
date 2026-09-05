@@ -17,6 +17,8 @@ import sqlite3
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
+
+from .exclusions import load as load_exclusions
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -175,11 +177,19 @@ def snapshot(profile: Path | None = None):
             conn.close()
 
 
-def extract_vocab(deck: str = "General", profile: Path | None = None) -> list[VocabWord]:
+def extract_vocab(
+    deck: str = "General",
+    profile: Path | None = None,
+    exclude_offensive: bool = True,
+) -> list[VocabWord]:
     """Every unique vocab word in `deck`, with its gloss and review state.
 
-    Suspended cards (queue -1) are excluded. Measured at ~30 ms end to end, so
-    callers should just call this every time rather than caching it.
+    Suspended cards (queue -1) are excluded. Slurs and words routinely mistaken
+    for them are held back too — see `exclusions.py` for why, and pass
+    exclude_offensive=False to see the unfiltered list.
+
+    Measured at ~30 ms end to end, so callers should just call this every time
+    rather than caching it.
     """
     with snapshot(profile) as conn:
         rows = conn.execute(
@@ -212,9 +222,27 @@ def extract_vocab(deck: str = "General", profile: Path | None = None) -> list[Vo
                     min(prior.ivl, ivl or 0) if prior.ivl and ivl else (prior.ivl or ivl or 0),
                     max(prior.reps, reps or 0),
                 )
-    return sorted(seen.values(), key=lambda w: w.term.lower())
+    words = sorted(seen.values(), key=lambda w: w.term.lower())
+    if exclude_offensive:
+        excluded = load_exclusions()
+        words = [w for w in words if w.term.strip().lower() not in excluded]
+    return words
 
 
-def extract_terms(deck: str = "General", profile: Path | None = None) -> list[str]:
+def held_back(deck: str = "General", profile: Path | None = None) -> list[str]:
+    """Deck words the prompt never sees, so the filtering is inspectable."""
+    excluded = load_exclusions()
+    return [
+        w.term
+        for w in extract_vocab(deck, profile, exclude_offensive=False)
+        if w.term.strip().lower() in excluded
+    ]
+
+
+def extract_terms(
+    deck: str = "General",
+    profile: Path | None = None,
+    exclude_offensive: bool = True,
+) -> list[str]:
     """Just the words — the shape most callers and the prompt still want."""
-    return [w.term for w in extract_vocab(deck, profile)]
+    return [w.term for w in extract_vocab(deck, profile, exclude_offensive)]
