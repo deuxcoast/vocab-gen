@@ -128,7 +128,7 @@ PAGE = """<!doctype html>
     <button class="go" type="submit" id="go">Generate</button>
   </form>
   <div class="status" id="status"></div>
-  <div id="out"></div>
+  <div id="out" tabindex="-1"></div>
 </div>
 
 <script>
@@ -199,7 +199,11 @@ async function sendSelected(allowDuplicate) {
 }
 
 document.addEventListener('keydown', e => {
-  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''));
+  const el = e.target;
+  const tag = (el && el.tagName) || '';
+  const typing =
+    tag === 'TEXTAREA' ||
+    (tag === 'INPUT' && !['checkbox', 'radio', 'button', 'submit'].includes(el.type));
   if (typing) return;
   if (e.key >= '1' && e.key <= '9') {
     const i = Number(e.key) - 1;
@@ -245,12 +249,24 @@ function render(data) {
   out.textContent = '';
   current = data; selected = null;
   window.scrollTo({top: 0});
+  // Take focus off whatever form control has it and give it to the results.
+  // Blurring only the word field was not enough: submitting with return leaves
+  // focus in the field, and the count select swallows number keys too. With a
+  // definite home for keystrokes the shortcuts do not depend on how the
+  // generation happened to be triggered.
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  setTimeout(() => out.focus({preventScroll: true}), 0);
 
   data.candidates.forEach((c, i) => {
     const card = document.createElement('div');
     card.className = 'card';
     card.dataset.idx = i;
-    card.onclick = ev => { if (ev.target.tagName !== 'BUTTON') select(i); };
+    card.onclick = ev => {
+      if (ev.target.tagName === 'BUTTON') return;
+      // Clicking a card means the user is choosing, not typing.
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      select(i);
+    };
 
     const pick = document.createElement('span');
     pick.className = 'pick';
@@ -365,7 +381,6 @@ $('#f').onsubmit = async e => {
       throw new Error(data.error || 'request failed');
     }
     $('#status').textContent = '';
-    $('#word').blur();
     if (data.fell_back_from) {
       const f = data.fell_back_from;
       showAlert('warn', `${f.provider} — ${KIND[f.kind] || f.kind}; used ${data.model} instead`, f.message);
