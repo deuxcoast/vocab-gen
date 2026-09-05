@@ -7,7 +7,15 @@ import re
 
 from wordfreq import zipf_frequency
 
-from .morphology import content_words, match_span, phrase_keys, pos_of
+from .morphology import (
+    Match,
+    build_index,
+    content_words,
+    find_all,
+    match_span,
+    phrase_keys,
+    pos_of,
+)
 
 
 # Asterisk emphasis may sit inside a word; underscore emphasis may not — which
@@ -182,6 +190,57 @@ def wrong_sense(sentence: str, target: str, claimed_pos: str) -> str | None:
     return actual
 
 
+def detect_reuse(sentence: str, deck, target: str, index: dict | None = None) -> list[Match]:
+    """Deck words genuinely present in the sentence, target excluded.
+
+    Reuse used to be read off the model's own `reused` list, which measured its
+    self-report rather than the sentence: a sentence reusing "marginalia" was
+    credited with nothing because the model had not mentioned it. Scanning the
+    deck finds what is actually there.
+    """
+    target_keys = set().union(*phrase_keys(target)) if phrase_keys(target) else set()
+    out = []
+    for m in find_all(sentence, deck, index):
+        if m.term.lower() in target_keys or m.text.lower() in target_keys:
+            continue
+        out.append(m)
+    return out
+
+
+def render_front(sentence: str, surface: str, reused: list[Match]) -> str:
+    """The card front: target underlined and italic, reused words italic.
+
+    Marks up by character span rather than by search-and-replace, so a word that
+    occurs twice is only styled where it was actually matched.
+    """
+    spans: list[tuple[int, int, str, str]] = []
+    target = _target_span(sentence, surface)
+    if target is not None:
+        spans.append((target[0], target[1], "<i><u>", "</u></i>"))
+    for m in reused:
+        if target is not None and not (m.end <= target[0] or m.start >= target[1]):
+            continue  # never nest inside the target
+        spans.append((m.start, m.end, "<i>", "</i>"))
+
+    out, cursor = [], 0
+    for start, end, open_tag, close_tag in sorted(spans):
+        if start < cursor:
+            continue
+        out.append(html.escape(sentence[cursor:start], quote=False))
+        out.append(open_tag + html.escape(sentence[start:end], quote=False) + close_tag)
+        cursor = end
+    out.append(html.escape(sentence[cursor:], quote=False))
+    return "".join(out)
+
+
+def _target_span(sentence: str, surface: str) -> tuple[int, int] | None:
+    if not surface:
+        return None
+    for m in find_all(sentence, [surface]):
+        return (m.start, m.end)
+    return None
+
+
 def prepare(result, word: str, deck: list[str]) -> list[dict]:
     """Verify each candidate, and check the most basic requirement of all.
 
@@ -190,15 +249,22 @@ def prepare(result, word: str, deck: list[str]) -> list[dict]:
     no underlined word at all, so it is a hard failure rather than a warning.
     """
     out = []
+    index = build_index(deck)
     for c in result.candidates:
         sentence = strip_markdown(c.sentence)
         surface = strip_markdown(c.surface_form)
         present = match_span(sentence, word) or match_span(sentence, surface)
+        matches = detect_reuse(sentence, deck, word, index)
         out.append(
             {
                 "sentence": sentence,
-                "front_html": wrap_target(sentence, surface),
-                "reused": verified_reuse(sentence, c.reused, deck),
+                "front_html": render_front(sentence, surface or word, matches),
+                "reused": [m.term for m in matches],
+                "claimed": list(c.reused),
+                "unclaimed": [
+                    m.term for m in matches
+                    if not any(r.lower() == m.term.lower() for r in c.reused)
+                ],
                 "giveaway": gives_away_answer(sentence, result.definition, word),
                 "missing_target": present is None,
                 "wrong_sense": wrong_sense(
@@ -207,3 +273,31 @@ def prepare(result, word: str, deck: list[str]) -> list[dict]:
             }
         )
     return out
+
+
+def rank_candidates(prepared: list[dict], keep: int) -> list[dict]:
+    """Order over-generated candidates and keep the best `keep`.
+
+    Ranking rather than filtering: a hard filter on reuse can leave fewer
+    candidates than asked for — at a 49% reuse rate, six generations yield three
+    reusing ones only about 60% of the time — and throwing the rest away is
+    worse than showing them last.
+
+    Order is by the free programmatic signals, strongest first: a candidate that
+    is unusable at all, then one that reuses nothing, then one that leaks its
+    definition or uses the wrong sense. Within a tier the model's own order is
+    kept, since nothing here can rank prose.
+    """
+
+    def key(index_and_candidate):
+        i, c = index_and_candidate
+        return (
+            bool(c.get("missing_target")),  # no target word at all: last
+            not bool(c.get("reused")),      # reuses something: first
+            bool(c.get("wrong_sense")),
+            bool(c.get("giveaway")),
+            i,                              # otherwise the model's own order
+        )
+
+    ordered = [c for _i, c in sorted(enumerate(prepared), key=key)]
+    return ordered[:keep] if keep > 0 else ordered

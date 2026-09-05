@@ -363,3 +363,126 @@ def test_the_target_itself_never_counts():
 
 def test_an_empty_definition_flags_nothing():
     assert gives_away_answer("Anything at all.", [], "obdurate") == []
+
+
+# --- reuse detection, not reuse self-report ---------------------------------
+
+from vocab_gen.render import detect_reuse, render_front
+
+BIG_DECK = ["marginalia", "glib", "strait", "supplicants", "sluice gates", "zephyr"]
+
+
+def test_finds_a_reused_word_the_model_never_mentioned():
+    """The reported bug: 'marginalia' was in the deck and in the sentence, and
+    was missed because the model only claimed 'glib'."""
+    sentence = "She read the editor's marginalia as a glib exercise in pedantry."
+    found = [m.term for m in detect_reuse(sentence, BIG_DECK, "pedantry")]
+    assert set(found) == {"marginalia", "glib"}
+
+
+def test_detection_ignores_what_the_model_claimed_entirely():
+    sentence = "A lone supplicant crossed the strait."
+    found = {m.term for m in detect_reuse(sentence, BIG_DECK, "obdurate")}
+    assert found == {"supplicants", "strait"}
+
+
+def test_the_target_is_never_counted_as_reuse():
+    sentence = "The zephyr was a true zephyr."
+    assert detect_reuse(sentence, BIG_DECK, "zephyr") == []
+
+
+def test_longest_phrase_wins_over_its_parts():
+    sentence = "They opened the sluice gates at dawn."
+    found = [m.term for m in detect_reuse(sentence, BIG_DECK + ["gates"], "dawn")]
+    assert "sluice gates" in found and "gates" not in found
+
+
+def test_detection_matches_across_inflection():
+    sentence = "A lone supplicant waited."
+    assert [m.term for m in detect_reuse(sentence, BIG_DECK, "x")] == ["supplicants"]
+
+
+# --- front rendering ---------------------------------------------------------
+
+
+def test_front_italicises_reuse_and_underlines_the_target():
+    sentence = "She read the marginalia as a glib exercise in pedantry."
+    html_out = render_front(sentence, "pedantry", detect_reuse(sentence, BIG_DECK, "pedantry"))
+    assert "<i>marginalia</i>" in html_out
+    assert "<i>glib</i>" in html_out
+    assert "<i><u>pedantry</u></i>" in html_out
+
+
+def test_front_escapes_the_surrounding_text():
+    sentence = "Tom & Jerry <fought> over the zephyr."
+    out = render_front(sentence, "zephyr", [])
+    assert "&amp;" in out and "&lt;fought&gt;" in out
+
+
+def test_front_styles_only_the_matched_occurrence():
+    """A word appearing twice must not be styled where it was not matched."""
+    sentence = "The zephyr died; another zephyr rose."
+    matches = detect_reuse(sentence, ["zephyr"], "x")
+    out = render_front(sentence, "", matches)
+    assert out.count("<i>zephyr</i>") == 2  # both were matched here
+
+
+def test_front_never_nests_reuse_inside_the_target():
+    sentence = "The glib remark was glib."
+    out = render_front(sentence, "glib", detect_reuse(sentence, ["glib"], "glib"))
+    assert "<i><u><i>" not in out
+
+
+def test_front_with_no_reuse_still_marks_the_target():
+    out = render_front("The judge was obdurate.", "obdurate", [])
+    assert out == "The judge was <i><u>obdurate</u></i>."
+
+
+# --- ranking over-generated candidates --------------------------------------
+
+from vocab_gen.render import rank_candidates
+
+
+def c(idx, reused=(), missing=False, giveaway=(), sense=None):
+    return {
+        "sentence": f"s{idx}", "reused": list(reused), "missing_target": missing,
+        "giveaway": list(giveaway), "wrong_sense": sense,
+    }
+
+
+def test_reusing_candidates_come_first():
+    out = rank_candidates([c(0), c(1, reused=["x"]), c(2)], keep=2)
+    assert out[0]["sentence"] == "s1"
+
+
+def test_a_candidate_without_the_target_is_ranked_last():
+    """Worse than reusing nothing: the card would have no word to underline."""
+    out = rank_candidates([c(0, missing=True, reused=["x"]), c(1)], keep=2)
+    assert out[0]["sentence"] == "s1"
+
+
+def test_giveaways_are_demoted_within_a_tier():
+    out = rank_candidates([c(0, reused=["x"], giveaway=["y"]), c(1, reused=["x"])], keep=2)
+    assert out[0]["sentence"] == "s1"
+
+
+def test_wrong_sense_outranks_giveaway_as_a_problem():
+    out = rank_candidates(
+        [c(0, reused=["x"], sense="NOUN"), c(1, reused=["x"], giveaway=["y"])], keep=2
+    )
+    assert out[0]["sentence"] == "s1"
+
+
+def test_the_models_order_is_kept_within_a_tier():
+    out = rank_candidates([c(0, reused=["x"]), c(1, reused=["x"])], keep=2)
+    assert [x["sentence"] for x in out] == ["s0", "s1"]
+
+
+def test_ranking_never_returns_fewer_than_asked_when_it_has_them():
+    """The reason this ranks rather than filters: reuse can be scarce."""
+    out = rank_candidates([c(0), c(1), c(2), c(3)], keep=3)
+    assert len(out) == 3  # none reuse, but three are still shown
+
+
+def test_keep_larger_than_the_pool_returns_the_pool():
+    assert len(rank_candidates([c(0), c(1)], keep=5)) == 2

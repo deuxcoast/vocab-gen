@@ -123,6 +123,15 @@ class PromptVariant:
     avoid: bool = True  # send the recently-used words to skip
     kept: bool = True  # send previously kept sentences as calibration
     relatedness: bool = True  # ask for domain overlap when choosing a reuse
+    # Generate this many times the requested candidates and show the best. Part
+    # of the variant rather than a run-level flag so two arms differing only in
+    # over-sampling can be judged side by side, in one run, on the same words.
+    oversample: int = 1
+    # Separate calls of n candidates each, pooled. Distinct from oversample:
+    # asking one call for 2n makes the model spread its candidates across more
+    # ground, since the prompt tells it to vary them, which appears to lower the
+    # reuse rate of the pool being ranked. Two calls each see a normal request.
+    batches: int = 1
 
     def system_text(self) -> str:
         return "\n\n".join(self.blocks)
@@ -156,6 +165,38 @@ VARIANTS: dict[str, PromptVariant] = {
             "naturalness within noise of it."
         ),
         blocks=(ROLE, WRITING, REUSE_BALANCED, DEFINITIONS),
+    ),
+    "baseline-os2": PromptVariant(
+        name="baseline-os2",
+        hypothesis=(
+            "The shipped prompt, generating six candidates and showing the best "
+            "three. Predicts reuse well above baseline's 49% at best-of-three "
+            "quality roughly flat, for 1.43x the cost — candidates share one "
+            "call, so only the output scales."
+        ),
+        blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
+        oversample=2,
+    ),
+    "baseline-os3": PromptVariant(
+        name="baseline-os3",
+        hypothesis=(
+            "As above with nine candidates. Tests whether the gain from "
+            "over-sampling keeps paying or flattens out."
+        ),
+        blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
+        oversample=3,
+    ),
+    "baseline-b2": PromptVariant(
+        name="baseline-b2",
+        hypothesis=(
+            "Two separate calls of three rather than one call of six. Tests the "
+            "explanation offered for over-sampling's failure: if asking for six "
+            "at once dilutes the pool, two normal requests should not, and "
+            "ranking over them should raise reuse. If reuse stays flat here too, "
+            "dilution was the wrong explanation."
+        ),
+        blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
+        batches=2,
     ),
     "no-glosses": PromptVariant(
         name="no-glosses",

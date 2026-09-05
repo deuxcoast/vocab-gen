@@ -12,9 +12,10 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .collection import extract_vocab
+from . import anki
 from .generate import GenerationError
 from .history import History
-from .render import back_html, prepare
+from .render import back_html, prepare, rank_candidates
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -57,8 +58,38 @@ PAGE = """<!doctype html>
   .status { color: var(--muted); font-size: .85rem; min-height: 1.4rem; margin-bottom: 1.5rem; }
   .card {
     background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-    padding: 1.1rem 1.2rem; margin-bottom: .9rem;
+    padding: 1.1rem 1.2rem; margin-bottom: .9rem; cursor: pointer;
+    position: relative; transition: border-color .12s, box-shadow .12s;
   }
+  .card:hover { border-color: var(--muted); }
+  .card.selected {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 7%, var(--card));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .card.selected::before {
+    content: ''; position: absolute; left: 0; top: 12%; bottom: 12%;
+    width: 3px; border-radius: 3px; background: var(--accent);
+  }
+  .pick {
+    position: absolute; top: .9rem; right: 1rem; font: .72rem ui-monospace, monospace;
+    color: var(--muted); border: 1px solid var(--line); border-radius: 4px;
+    padding: .05rem .35rem;
+  }
+  .card.selected .pick { color: var(--accent); border-color: var(--accent); }
+  .sendbar {
+    display: flex; align-items: center; gap: .7rem; margin: 1.2rem 0 .4rem;
+    position: sticky; bottom: 0; z-index: 5;
+    background: var(--bg); padding: .7rem 0;
+    border-top: 1px solid var(--line);
+  }
+  .sendbar .selinfo { font-size: .82rem; color: var(--accent); font-weight: 600; }
+  .sendbar button {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+    font-weight: 600; padding: .55rem 1rem;
+  }
+  .sendbar .hint { color: var(--muted); font-size: .82rem; }
+  .sent { color: var(--ok); font-size: .85rem; }
   .num { color: var(--muted); font-size: .8rem; font-family: ui-monospace, monospace; }
   .sentence { margin: .35rem 0 .8rem; }
   .sentence u { text-underline-offset: 3px; }
@@ -97,12 +128,90 @@ PAGE = """<!doctype html>
     <button class="go" type="submit" id="go">Generate</button>
   </form>
   <div class="status" id="status"></div>
-  <div id="out"></div>
+  <div id="out" tabindex="-1"></div>
 </div>
 
 <script>
 const $ = s => document.querySelector(s);
 let lastErrorTitle = '';
+let selected = null;
+let current = null;
+
+function select(i) {
+  selected = i;
+  let target = null;
+  document.querySelectorAll('.card[data-idx]').forEach(el => {
+    const on = Number(el.dataset.idx) === i;
+    el.classList.toggle('selected', on);
+    if (on) target = el;
+  });
+  const bar = $('#sendbar');
+  if (bar) bar.hidden = (i === null);
+  const label = $('#selinfo');
+  if (label) label.textContent = (i === null) ? '' : `candidate ${i + 1} selected`;
+  // Without this you can press a number, highlight a card below the fold, and
+  // see nothing happen — which reads as the key not working. 'nearest' is a
+  // no-op when the card is already on screen, so this needs no visibility test
+  // of its own; hand-rolling one only invents a way to get it wrong.
+  // Instant, not smooth: smooth scrolling is a no-op in some contexts, and a
+  // keyboard picker wants the card there before the next keystroke anyway.
+  if (target) target.scrollIntoView({block: 'nearest'});
+}
+
+async function sendSelected(allowDuplicate) {
+  if (selected === null || !current) return;
+  const c = current.candidates[selected];
+  const btn = $('#send');
+  btn.disabled = true;
+  $('#sendmsg').textContent = 'sending…';
+  try {
+    const res = await fetch('/api/send', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        front: c.front_html, back: current.back_html, word: current.word,
+        sentence: c.sentence, reused: c.reused, allow_duplicate: !!allowDuplicate,
+      }),
+    });
+    const data = await res.json();
+    if (res.status === 409 && data.duplicate) {
+      $('#sendmsg').innerHTML = '';
+      const warn = document.createElement('span');
+      warn.className = 'hint';
+      warn.textContent = data.error + ' ';
+      const again = document.createElement('button');
+      again.textContent = 'Send anyway';
+      again.onclick = () => sendSelected(true);
+      $('#sendmsg').appendChild(warn); $('#sendmsg').appendChild(again);
+      return;
+    }
+    if (!res.ok) throw new Error(data.error || 'send failed');
+    $('#sendmsg').innerHTML = '';
+    const ok = document.createElement('span');
+    ok.className = 'sent';
+    ok.textContent = `added to ${data.deck}, tagged ${data.tag}`;
+    $('#sendmsg').appendChild(ok);
+  } catch (err) {
+    $('#sendmsg').textContent = '';
+    showAlert('error', 'Could not add the card', String(err.message || err));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('keydown', e => {
+  const el = e.target;
+  const tag = (el && el.tagName) || '';
+  const typing =
+    tag === 'TEXTAREA' ||
+    (tag === 'INPUT' && !['checkbox', 'radio', 'button', 'submit'].includes(el.type));
+  if (typing) return;
+  if (e.key >= '1' && e.key <= '9') {
+    const i = Number(e.key) - 1;
+    if (current && i < current.candidates.length) { select(i); e.preventDefault(); }
+  } else if (e.key === 'Enter' && selected !== null) {
+    sendSelected(false); e.preventDefault();
+  }
+});
 const KIND = {
   auth: 'API key rejected', balance: 'out of credit', rate_limit: 'rate limited',
   not_found: 'no such model', connection: 'cannot reach the API', other: 'failed',
@@ -138,10 +247,31 @@ function copyBtn(label, text, onCopy) {
 function render(data) {
   const out = $('#out');
   out.textContent = '';
+  current = data; selected = null;
+  window.scrollTo({top: 0});
+  // Take focus off whatever form control has it and give it to the results.
+  // Blurring only the word field was not enough: submitting with return leaves
+  // focus in the field, and the count select swallows number keys too. With a
+  // definite home for keystrokes the shortcuts do not depend on how the
+  // generation happened to be triggered.
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  setTimeout(() => out.focus({preventScroll: true}), 0);
 
   data.candidates.forEach((c, i) => {
     const card = document.createElement('div');
     card.className = 'card';
+    card.dataset.idx = i;
+    card.onclick = ev => {
+      if (ev.target.tagName === 'BUTTON') return;
+      // Clicking a card means the user is choosing, not typing.
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      select(i);
+    };
+
+    const pick = document.createElement('span');
+    pick.className = 'pick';
+    pick.textContent = i + 1;
+    card.appendChild(pick);
 
     const num = document.createElement('div');
     num.className = 'num';
@@ -190,6 +320,25 @@ function render(data) {
 
     out.appendChild(card);
   });
+
+  const bar = document.createElement('div');
+  bar.className = 'sendbar';
+  bar.id = 'sendbar';
+  bar.hidden = true;
+  const send = document.createElement('button');
+  send.id = 'send';
+  send.textContent = 'Send to Anki';
+  send.onclick = () => sendSelected(false);
+  const info = document.createElement('span');
+  info.className = 'selinfo';
+  info.id = 'selinfo';
+  const hint = document.createElement('span');
+  hint.className = 'hint';
+  hint.textContent = 'press 1-9 to pick, return to send';
+  const msg = document.createElement('span');
+  msg.id = 'sendmsg';
+  bar.appendChild(send); bar.appendChild(info); bar.appendChild(hint); bar.appendChild(msg);
+  out.appendChild(bar);
 
   const h = document.createElement('h2');
   h.textContent = 'definition';
@@ -250,7 +399,7 @@ $('#f').onsubmit = async e => {
 """
 
 
-def _handler(deck, profile, model=None, effort=None):
+def _handler(deck, profile, model=None, effort=None, oversample=1):
     def load_vocab():
         v = extract_vocab(deck=deck, profile=profile)
         return v, [w.term for w in v]
@@ -282,6 +431,38 @@ def _handler(deck, profile, model=None, effort=None):
                 self._json(404, {"error": "not found"})
 
         def do_POST(self):
+            if self.path == "/api/send":
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                    req = json.loads(self.rfile.read(length) or b"{}")
+                    front = (req.get("front") or "").strip()
+                    back = (req.get("back") or "").strip()
+                    if not front:
+                        self._json(400, {"error": "nothing to send"})
+                        return
+                    allow = bool(req.get("allow_duplicate"))
+                    if not allow and anki.is_duplicate(front, back):
+                        self._json(409, {
+                            "duplicate": True,
+                            "error": "Anki already has a card with this front.",
+                        })
+                        return
+                    note_id = anki.add_note(front, back, allow_duplicate=allow)
+                    # Keeping it is the strongest signal that a candidate was good.
+                    history = History.load()
+                    history.record_kept(
+                        (req.get("word") or "").strip(),
+                        (req.get("sentence") or "").strip(),
+                        list(req.get("reused") or []),
+                    )
+                    history.save()
+                    self._json(200, {"ok": True, "note_id": note_id,
+                                     "deck": anki.DECK, "tag": anki.TAG})
+                except anki.AnkiError as exc:
+                    self._json(502, {"error": str(exc)})
+                except Exception as exc:
+                    self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+                return
             if self.path == "/api/choose":
                 try:
                     length = int(self.headers.get("Content-Length") or 0)
@@ -323,10 +504,11 @@ def _handler(deck, profile, model=None, effort=None):
                     avoid=avoid,
                     effort=effort,
                     kept=history.recent_kept(),
+                    oversample=oversample,
                 )
                 result = outcome.result
                 used, used_effort = outcome.model, outcome.effort
-                cands = prepare(result, word, words)
+                cands = rank_candidates(prepare(result, word, words), n)
                 for c in cands:
                     history.record(c["reused"])
                 history.save()
@@ -366,10 +548,11 @@ def serve(
     open_browser: bool = False,
     model: str | None = None,
     effort: str | None = None,
+    oversample: int = 1,
 ) -> int:
     # 127.0.0.1, never 0.0.0.0: this is a personal tool with no authentication.
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), _handler(deck, profile, model, effort))
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), _handler(deck, profile, model, effort, oversample))
     except OSError as exc:
         print(f"Cannot bind port {port}: {exc}\nTry --port {port + 1}.")
         return 1

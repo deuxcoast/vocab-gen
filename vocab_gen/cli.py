@@ -9,7 +9,7 @@ from .collection import extract_vocab, held_back
 from .env import load_env
 from .history import History
 from .providers import PROVIDERS, available, why_unavailable
-from .render import back_html, prepare
+from .render import back_html, prepare, rank_candidates
 
 
 def _style(enabled: bool):
@@ -30,7 +30,10 @@ def _print_result(word, result, cands, model, effort, color: bool) -> None:
         print(s(f"  {i}.", "1;33"), c["sentence"])
         print(s(f"     {c['front_html']}", "2"))
         if c["reused"]:
-            print(s(f"     reuses: {', '.join(c['reused'])}", "32"))
+            note = ", ".join(c["reused"])
+            if c.get("unclaimed"):
+                note += f"  (unreported by the model: {', '.join(c['unclaimed'])})"
+            print(s(f"     reuses: {note}", "32"))
         else:
             print(s("     reuses: nothing (no natural fit)", "2"))
         if c["missing_target"]:
@@ -147,6 +150,11 @@ def main(argv: list[str] | None = None) -> int:
         help="thinking depth; lower is cheaper (default: low, env: VOCAB_EFFORT). "
         "Ignored by models that don't support it.",
     )
+    parser.add_argument(
+        "--oversample", type=int, default=1, metavar="N",
+        help="generate N times as many candidates and show the best (default 1). "
+        "Cheap: candidates share one call, so only the output scales.",
+    )
     parser.add_argument("--usage", action="store_true", help="report token usage after generating")
     parser.add_argument(
         "--stats", action="store_true", help="show which deck words have been used, then exit"
@@ -174,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             open_browser=args.open,
             model=args.model,
             effort=args.effort,
+            oversample=args.oversample,
         )
 
     vocab = extract_vocab(deck=args.deck, profile=args.profile)
@@ -236,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             avoid=avoid,
             effort=args.effort,
             kept=kept,
+            oversample=args.oversample,
         )
     except GenerationError as exc:
         _print_failure(exc, color=sys.stderr.isatty())
@@ -246,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if outcome.fell_back_from is not None:
         _print_fallback(outcome.fell_back_from, model, color=sys.stderr.isatty())
-    cands = prepare(result, args.word, words)
+    cands = rank_candidates(prepare(result, args.word, words), args.count)
 
     if args.html:
         for c in cands:

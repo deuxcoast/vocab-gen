@@ -30,6 +30,7 @@ def main() -> int:
     ap.add_argument("--list-variants", action="store_true", help="show variants and exit")
     ap.add_argument("--cases", type=int, default=None, help="use only the first N cases")
     ap.add_argument("-n", "--candidates", type=int, default=3)
+    ap.add_argument("--oversample", type=int, default=1)
     ap.add_argument("--judge", default=DEFAULT_JUDGE)
     ap.add_argument("--no-judge", action="store_true", help="programmatic grading only")
     ap.add_argument("--label", default="", help="tag appended to the run id")
@@ -68,6 +69,7 @@ def main() -> int:
         variants=args.variants,
         n_cases=args.cases,
         n_candidates=args.candidates,
+        oversample=args.oversample,
         judge_model=None if args.no_judge else args.judge,
         label=args.label,
         on_event=event,
