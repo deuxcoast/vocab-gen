@@ -52,6 +52,8 @@ def by_model(rows: list[dict]) -> dict[str, dict]:
             "reuse_rate": _mean([bool(r["verified"]) for r in good]),
             "reuses_per_sentence": _mean([r["verified"] for r in good]),
             "targeting": _mean([r.get("targeting") for r in good]),
+            # .get: runs stored before this metric existed must still re-render.
+            "prefer_hit_rate": _mean([r.get("prefer_hit_rate") for r in good]),
             "invented_rate": _mean([bool(r["invented"]) for r in good]),
             "giveaway_rate": _mean([r["gives_away"] for r in good]),
             "naturalness": _mean([r["naturalness"] for r in good]),
@@ -90,8 +92,8 @@ def render(rows: list[dict]) -> str:
     lines = []
     head = (
         f"{'model':30s} {'n':>4s} {'err':>4s} {'usable':>7s} {'reuse':>6s} "
-        f"{'inv':>5s} {'give':>5s} {'natur':>6s} {'recall':>6s} {'judge':>6s} "
-        f"{'acc':>5s} {'secs':>5s} {'$/100 acc':>10s}"
+        f"{'pref':>5s} {'inv':>5s} {'give':>5s} {'natur':>6s} {'recall':>6s} "
+        f"{'judge':>6s} {'acc':>5s} {'secs':>5s} {'$/100 acc':>10s}"
     )
     lines.append(head)
     lines.append("-" * len(head))
@@ -105,6 +107,7 @@ def render(rows: list[dict]) -> str:
         lines.append(
             f"{model:30s} {s['candidates']:4d} {s['errors']:4d} "
             f"{s['usable_rate'] or 0:7.0%} {s['reuse_rate'] or 0:6.0%} "
+            f"{('  n/a' if s['prefer_hit_rate'] is None else format(s['prefer_hit_rate'], '5.0%')):>5s} "
             f"{s['invented_rate'] or 0:5.0%} {s['giveaway_rate'] or 0:5.0%} "
             f"{s['naturalness'] or 0:6.2f} {s['recall_value'] or 0:6.2f} "
             f"{s['judge_overall'] or 0:6.2f} {s['accept_rate']:5.0%} "
@@ -115,6 +118,10 @@ def render(rows: list[dict]) -> str:
     lines.append(
         "usable = has the target word and invents no reuse · reuse = reuses >=1 deck "
         "word · inv = invented a deck word"
+    )
+    lines.append(
+        "pref = share of reuses that came from the offered list rather than the rest "
+        "of the deck; n/a if unrecorded"
     )
     lines.append(
         "give = leaks the definition · natur/recall/judge = blind judge, 1-5 · "
@@ -223,6 +230,7 @@ def render_paired(rows: list[dict], baseline: str = "baseline") -> str:
             ("naturalness", "naturalness"),
             ("verified", "reuses/sent"),
             ("targeting", "targeting"),
+            ("prefer_hit_rate", "prefer hits"),
             ("gives_away", "giveaway"),
         ):
             res = paired(rows, arm, baseline, metric=metric)

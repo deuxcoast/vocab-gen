@@ -52,6 +52,13 @@ class Row:
     unreported: int
     targeting: float | None
     reused: list
+    # The preferred list this generation was actually shown, and how much of the
+    # reuse came from it. Stored per row so a run stays re-analysable on its own,
+    # the way latency and usage already are.
+    prefer: list
+    prefer_offered: int
+    prefer_hits: int
+    prefer_hit_rate: float | None
     no_invented_reuse: bool
     invented: list
     gives_away: bool | None
@@ -133,7 +140,8 @@ def run(
                 except Exception as exc:
                     on_event("error", spec, case.word, str(exc).splitlines()[0])
                     rows.append(
-                        _error_row(run_id, spec, arm, case, str(exc).splitlines()[0])
+                        _error_row(run_id, spec, arm, case, str(exc).splitlines()[0],
+                                   [w.term for w in prefer])
                     )
                     continue
                 latency = time.perf_counter() - started
@@ -158,6 +166,7 @@ def run(
                     g = grade_candidate(
                             cand, case.word, result.definition, words,
                             getattr(result, 'part_of_speech', ''), memory,
+                            [w.term for w in prefer],
                         )
                     rows.append(
                         Row(
@@ -169,9 +178,12 @@ def run(
                             cache_read=usage.cache_read_input_tokens,
                             # generation cost, split across its candidates
                             cost=(cost / max(len(shown), 1)) if cost is not None else None,
+                            prefer=[w.term for w in prefer],
                             **{k: g[k] for k in (
                                 "sentence", "words", "has_target", "claimed", "verified",
-                                "unreported", "targeting", "reused", "no_invented_reuse", "invented", "gives_away",
+                                "unreported", "targeting", "reused",
+                                "prefer_offered", "prefer_hits", "prefer_hit_rate",
+                                "no_invented_reuse", "invented", "gives_away",
                                 "giveaway_words", "wrong_sense", "usable")},
                         )
                     )
@@ -214,11 +226,14 @@ def _judge_all(rows: list[Row], judge_model: str, seed: int, on_event) -> None:
         on_event("judged", judge_model, word, f"{len(verdicts)} scored")
 
 
-def _error_row(run_id: str, model: str, variant: str, case: Case, error: str) -> Row:
+def _error_row(run_id: str, model: str, variant: str, case: Case, error: str,
+               prefer: list | None = None) -> Row:
     return Row(
         run_id=run_id, model=model, variant=variant, word=case.word, pos=case.pos,
         register=case.register, index=0, sentence="", words=0, has_target=False,
-        claimed=0, verified=0, unreported=0, targeting=None, reused=[], no_invented_reuse=True, invented=[],
+        claimed=0, verified=0, unreported=0, targeting=None, reused=[],
+        prefer=list(prefer or []), prefer_offered=len(prefer or []),
+        prefer_hits=0, prefer_hit_rate=None, no_invented_reuse=True, invented=[],
         gives_away=False, giveaway_words=[], wrong_sense="", usable=False, latency=0.0,
         input_tokens=0, output_tokens=0, cache_read=0, cost=None, error=error,
     )
