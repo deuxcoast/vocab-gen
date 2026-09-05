@@ -5,7 +5,9 @@ from __future__ import annotations
 import html
 import re
 
-from .morphology import contains_form, stem, tokenize
+from wordfreq import zipf_frequency
+
+from .morphology import content_words, match_span, phrase_keys, pos_of
 
 
 # Asterisk emphasis may sit inside a word; underscore emphasis may not — which
@@ -69,19 +71,24 @@ def verified_reuse(sentence: str, claimed: list[str], deck) -> list[str]:
     deck's spelling is what comes back, so usage history aggregates one word to
     one key instead of scattering across its inflections.
     """
-    canonical: dict[tuple[str, ...], str] = {}
-    for term in deck:
-        canonical.setdefault(tuple(stem(t) for t in tokenize(term)), term)
-
     out: list[str] = []
     for word in claimed:
-        key = tuple(stem(t) for t in tokenize(word))
-        term = canonical.get(key)
+        term = _canonical(word, deck)
         if term is None or term in out:
             continue
-        if contains_form(sentence, term) or contains_form(sentence, word):
+        if match_span(sentence, term) or match_span(sentence, word):
             out.append(term)
     return out
+
+
+def _canonical(word: str, deck) -> str | None:
+    """The deck's own spelling of a claimed word, matching across inflection."""
+    keys = phrase_keys(word)
+    for term in deck:
+        term_keys = phrase_keys(term)
+        if len(term_keys) == len(keys) and all(a & b for a, b in zip(keys, term_keys)):
+            return term
+    return None
 
 
 def unknown_claims(claimed: list[str], deck) -> list[str]:
@@ -92,45 +99,87 @@ def unknown_claims(claimed: list[str], deck) -> list[str]:
     "supplicants" as a hallucination, inflating the rate for any model that
     inflects its reuses.
     """
-    known = {tuple(stem(t) for t in tokenize(term)) for term in deck}
-    return [w for w in claimed if tuple(stem(t) for t in tokenize(w)) not in known]
+    return [w for w in claimed if _canonical(w, deck) is None]
 
 
-# Words too common to signal that a definition has leaked into the sentence.
-_STOPWORDS = frozenset("""
-a an the and or but if of to in on at by for with from as is are was were be been being
-that this these those it its his her their our your my you he she they we i not no nor
-who whom which what when where why how all any both each few more most other some such
-only own same so than too very can will just don should now one two something someone
-person people thing things way ways used using use often usually typically especially
-""".split())
+# Zipf scale: 7 is "the", 6 is "need"/"against", 3 is "bearers"/"treachery".
+# Measured on the words this check actually flagged: coincidental overlaps sat at
+# 5.7-6.4 and genuine giveaways at 2.6-3.8, so the boundary goes between them.
+INFORMATIVE_ZIPF = 4.5
+
+
+def _informative(word: str) -> bool:
+    """Rare enough that sharing it with the definition is unlikely to be chance."""
+    return zipf_frequency(word, "en") < INFORMATIVE_ZIPF
 
 
 def gives_away_answer(sentence: str, definition: list[str], target: str) -> list[str]:
-    """Content words shared by the sentence and the word's own definition.
+    """Words shared with the definition that actually leak the meaning.
 
-    A card stops testing recall if the sentence hands over the meaning — the
-    prompt forbids glossing the target, but nothing checked until now. Returns
-    the offending words so a candidate can be flagged rather than silently
-    dropped; short overlaps are often innocent.
+    Sharing a content word is not enough on its own: "need" or "cultural" turn up
+    in a definition and a sentence by coincidence, and flagging those buries the
+    real cases and adds noise to a metric used to compare prompts.
+
+    A shared word counts when it is rare enough to be informative, or when
+    several are shared at once — one common word is a coincidence, three is the
+    definition being paraphrased.
     """
-    target_stems = {stem(t) for t in tokenize(target)}
-    def_stems: dict[str, str] = {}
-    for line in definition:
-        for token in tokenize(line):
-            low = token.lower()
-            if low in _STOPWORDS or len(low) < 4:
-                continue
-            def_stems.setdefault(stem(token), token)
+    target_keys = set().union(*phrase_keys(target)) if phrase_keys(target) else set()
+    defined = content_words(" ".join(definition))
+    if not defined:
+        return []
 
-    hits: list[str] = []
-    for token in tokenize(sentence):
-        st = stem(token)
-        if st in target_stems or st not in def_stems:
+    shared: list[tuple[str, str]] = []
+    for lemma_, surface in content_words(sentence).items():
+        if lemma_ in target_keys or surface.lower() in target_keys:
             continue
-        if token not in hits:
-            hits.append(token)
-    return hits
+        if lemma_ in defined:
+            shared.append((lemma_, surface))
+
+    informative = [surface for lemma_, surface in shared if _informative(lemma_)]
+    if informative:
+        return informative
+    # No single word is rare, but if the sentence reproduces enough of the
+    # definition it is a paraphrase regardless of how common the parts are.
+    # Counting shared words is the wrong test — what matters is how much of the
+    # definition came through, so a long sentence cannot accumulate coincidences.
+    if shared and len(shared) / len(defined) >= PARAPHRASE_SHARE:
+        return [surface for _lemma, surface in shared]
+    return []
+
+
+# Half the definition's content words turning up is no longer a coincidence.
+PARAPHRASE_SHARE = 0.5
+
+
+# How the model's own part-of-speech label maps onto what spaCy tags.
+POS_ALIASES = {
+    "noun": {"NOUN", "PROPN"},
+    "verb": {"VERB", "AUX"},
+    "adjective": {"ADJ"},
+    "adverb": {"ADV"},
+}
+
+
+def wrong_sense(sentence: str, target: str, claimed_pos: str) -> str | None:
+    """Is the target used as a different part of speech than its definition?
+
+    A deck entry for the verb `countenance` is not reinforced by a sentence
+    using the noun. Returns the tag actually used when it conflicts, else None.
+    Anything outside the four main classes is not judged.
+    """
+    expected = None
+    label = (claimed_pos or "").strip().lower()
+    for name, tags in POS_ALIASES.items():
+        if label.startswith(name):
+            expected = tags
+            break
+    if expected is None:
+        return None
+    actual = pos_of(sentence, target)
+    if actual is None or actual in expected:
+        return None
+    return actual
 
 
 def prepare(result, word: str, deck: list[str]) -> list[dict]:
@@ -144,7 +193,7 @@ def prepare(result, word: str, deck: list[str]) -> list[dict]:
     for c in result.candidates:
         sentence = strip_markdown(c.sentence)
         surface = strip_markdown(c.surface_form)
-        present = contains_form(sentence, word) or contains_form(sentence, surface)
+        present = match_span(sentence, word) or match_span(sentence, surface)
         out.append(
             {
                 "sentence": sentence,
@@ -152,6 +201,9 @@ def prepare(result, word: str, deck: list[str]) -> list[dict]:
                 "reused": verified_reuse(sentence, c.reused, deck),
                 "giveaway": gives_away_answer(sentence, result.definition, word),
                 "missing_target": present is None,
+                "wrong_sense": wrong_sense(
+                    sentence, word, getattr(result, "part_of_speech", "")
+                ),
             }
         )
     return out

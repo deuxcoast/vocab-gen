@@ -13,6 +13,7 @@ import time
 
 from pydantic import BaseModel, Field
 
+from .prompts import BASELINE, PromptVariant, get as get_variant
 from .providers import (
     PROVIDERS,
     classify,
@@ -135,61 +136,18 @@ class Generation(BaseModel):
     candidates: list[Candidate]
 
 
-INSTRUCTIONS = """\
-You write example sentences for a native English speaker's personal Anki vocabulary deck.
-
-The learner's method: the front of a card is a single real sentence containing the target \
-word; the back is one or two terse definition bullets. Sentences have historically been \
-lifted from dictionary example banks and literary quotations, so they read like published \
-prose — journalism, criticism, fiction, popular science — never like textbook filler.
-
-Your job is to write fresh sentences for a new target word that ALSO happen to reuse words \
-the learner is already studying, so that old vocabulary resurfaces in new contexts.
-
-How to write them:
-
-- Write a sentence that is genuinely about something — a specific scene, claim, or event. \
-Concrete beats abstract. A reader who did not know it was a vocabulary exercise should not \
-be able to tell.
-- 15 to 40 words. Vary the syntax across candidates; do not open every sentence the same way.
-- Give each candidate a clearly different subject matter and register from the others.
-- Write plain prose only. No markdown, no asterisks, no bold or italics, no HTML \
-in the sentence — the card applies its own formatting.
-- The target word must carry real semantic weight. Do NOT gloss or define it in the \
-sentence — no appositives like "the nexus, or central link, between…". The card has to test \
-recall, so context should suggest the meaning without handing it over.
-- The target may be inflected to fit (plural, past tense, adverb form). Report the exact \
-surface form you used.
-
-Reusing the learner's known words — this is the part that goes wrong most easily:
-
-- Reuse ONE or TWO known words per sentence, and only where that word is genuinely the one \
-a good writer would have reached for anyway.
-- It is much better to reuse nothing than to force a pairing. A sentence that reads like two \
-vocabulary words were bolted together has failed, even if both words are used correctly. If \
-a candidate has no natural pairing, return an empty `reused` list and let the sentence stand \
-on its own merit.
-- Do not cluster words just because they are both "difficult". Ask whether the two words \
-plausibly belong to the same subject matter, register, and era.
-- Never reuse a known word that is a synonym or near-synonym of the target — it makes the \
-sentence redundant and the card ambiguous.
-- Only list a word in `reused` if it actually appears in that sentence.
-
-The definition bullets: terse and plain, the way someone writes for their own recall. One \
-short clause is often enough ("Unyielding."; "A process that can't be stopped."). Add a \
-second bullet only when it earns its place — a distinct sense, or the connotation that makes \
-the word worth knowing. Do not repeat the target word inside its own definition.\
-"""
+INSTRUCTIONS = BASELINE.system_text()  # kept for callers that referenced it
 
 
-def build_system(words: list[str]) -> list[SystemBlock]:
+def build_system(words: list[str], variant: PromptVariant | None = None) -> list[SystemBlock]:
     """Static instructions + the known-word list, as a cacheable prefix.
 
     The word list is sorted deterministically upstream; an unstable order here
     would silently invalidate the cached prefix on every call.
     """
+    variant = variant or BASELINE
     return [
-        SystemBlock(INSTRUCTIONS),
+        SystemBlock(variant.system_text()),
         SystemBlock(
             "The learner's known-word list follows. These are the words already in "
             f"the deck ({len(words)} of them):\n\n" + ", ".join(words),
@@ -249,6 +207,7 @@ def generate(
     effort: str | None = None,
     kept: list[dict] | None = None,
     allow_fallback: bool = True,
+    variant: str | PromptVariant | None = None,
 ) -> Outcome:
     """Generate candidates, falling back to a second model if the first cannot.
 
@@ -259,7 +218,7 @@ def generate(
     """
     spec = resolve_model(model)
     try:
-        return _generate_once(spec, word, words, n, prefer, avoid, effort, kept)
+        return _generate_once(spec, word, words, n, prefer, avoid, effort, kept, variant)
     except GenerationError as primary:
         fallback = resolve_model(FALLBACK_MODEL)
         chose_explicitly = model is not None
@@ -272,7 +231,9 @@ def generate(
         ):
             raise
         try:
-            outcome = _generate_once(fallback, word, words, n, prefer, avoid, effort, kept)
+            outcome = _generate_once(
+                fallback, word, words, n, prefer, avoid, effort, kept, variant
+            )
         except GenerationError as secondary:
             # Both failed. Reporting only the second would point at the wrong
             # provider — the fallback was never the one you asked for.
@@ -290,9 +251,10 @@ def generate(
 
 
 def _generate_once(
-    spec, word, words, n, prefer, avoid, effort, kept
+    spec, word, words, n, prefer, avoid, effort, kept, variant=None
 ) -> Outcome:
     provider_name, model_id = split_spec(spec)
+    variant = variant if isinstance(variant, PromptVariant) else get_variant(variant)
     cfg = config_for(provider_name)
     effort = resolve_effort(effort) if supports_effort(spec) else None
 
@@ -310,8 +272,8 @@ def _generate_once(
             model_id,
             lambda: provider.complete(
                 model=model_id,
-                system=build_system(words),
-                user=build_user_message(word, n, prefer, avoid, kept),
+                system=build_system(words, variant),
+                user=build_user_message(word, n, prefer, avoid, kept, variant),
                 schema_model=Generation,
                 max_tokens=MAX_TOKENS_BY_EFFORT.get(effort, 4000),
                 effort=effort,
@@ -429,6 +391,7 @@ def build_user_message(
     prefer=None,
     avoid: list[str] | None = None,
     kept: list[dict] | None = None,
+    variant: PromptVariant | None = None,
 ) -> str:
     """The variable half of the prompt.
 
@@ -436,40 +399,50 @@ def build_user_message(
     sits after the last cache breakpoint, so it can change on every call without
     invalidating the cached word list.
     """
+    variant = variant or BASELINE
     parts = [
         f"Target word or phrase: {word}",
         "",
         f"Write {n} candidate sentences for it, following the method above. "
         "Also give the part of speech and the definition bullets.",
     ]
-    if avoid:
+    if avoid and variant.avoid:
         parts += [
             "",
             "These known words have come up in recent cards. Skip them unless one is "
             "the unmistakably right choice: " + ", ".join(avoid) + ".",
         ]
     if prefer:
-        lines = []
-        for w in prefer:
-            gloss = (w.gloss or "").strip()
-            if len(gloss) > 90:
-                gloss = gloss[:87].rstrip() + "..."
-            lines.append(f"- {w.term}" + (f" — {gloss}" if gloss else ""))
-        parts += [
-            "",
-            "These known words have rarely or never appeared on a card, and are due "
-            "to resurface. Each is given with the learner's own definition, which is "
-            "the sense they actually learned — use that sense, not another one the "
-            "word might carry.",
-            "",
-            "\n".join(lines),
-            "",
-            "Pick from this list only where the word's subject matter genuinely "
-            "overlaps with the sentence you are writing — a shared domain, register, "
-            "or situation. Do not reach for one just because it is on the list: "
-            "reusing nothing still beats forcing a word in.",
-        ]
-    if kept:
+        if variant.glosses:
+            lines = []
+            for w in prefer:
+                gloss = (w.gloss or "").strip()
+                if len(gloss) > 90:
+                    gloss = gloss[:87].rstrip() + "..."
+                lines.append(f"- {w.term}" + (f" — {gloss}" if gloss else ""))
+            listing = "\n".join(lines)
+            preamble = (
+                "These known words have rarely or never appeared on a card, and are due "
+                "to resurface. Each is given with the learner's own definition, which is "
+                "the sense they actually learned — use that sense, not another one the "
+                "word might carry."
+            )
+        else:
+            listing = ", ".join(w.term for w in prefer)
+            preamble = (
+                "These known words have rarely or never appeared on a card, and are due "
+                "to resurface."
+            )
+        parts += ["", preamble, "", listing]
+        if variant.relatedness:
+            parts += [
+                "",
+                "Pick from this list only where the word's subject matter genuinely "
+                "overlaps with the sentence you are writing — a shared domain, register, "
+                "or situation. Do not reach for one just because it is on the list: "
+                "reusing nothing still beats forcing a word in.",
+            ]
+    if kept and variant.kept:
         examples = "\n".join(f"- {k['sentence']}" for k in kept if k.get("sentence"))
         if examples:
             parts += [
@@ -481,3 +454,5 @@ def build_user_message(
                 examples,
             ]
     return "\n".join(parts)
+
+

@@ -6,21 +6,30 @@ can never disagree with what the tool actually does to a card.
 
 from __future__ import annotations
 
-from ..render import gives_away_answer, strip_markdown, unknown_claims, verified_reuse
-from ..morphology import contains_form
+from ..morphology import match_span
+from ..render import (
+    gives_away_answer,
+    strip_markdown,
+    unknown_claims,
+    verified_reuse,
+    wrong_sense,
+)
 
 
 # A candidate failing any of these is unusable regardless of how it reads.
 HARD_GATES = ("has_target", "no_invented_reuse")
 
 
-def grade_candidate(candidate, word: str, definition: list[str], deck: list[str]) -> dict:
+def grade_candidate(
+    candidate, word: str, definition: list[str], deck: list[str], pos: str = ""
+) -> dict:
     sentence = strip_markdown(candidate.sentence)
     surface = strip_markdown(candidate.surface_form)
     verified = verified_reuse(sentence, candidate.reused, deck)
     invented = unknown_claims(candidate.reused, deck)
     giveaway = gives_away_answer(sentence, definition, word)
-    present = contains_form(sentence, word) or contains_form(sentence, surface)
+    present = match_span(sentence, word) or match_span(sentence, surface)
+    sense = wrong_sense(sentence, word, pos)
 
     return {
         "sentence": sentence,
@@ -32,6 +41,7 @@ def grade_candidate(candidate, word: str, definition: list[str], deck: list[str]
         "no_invented_reuse": not invented,
         "invented": invented,
         "gives_away": bool(giveaway),
+        "wrong_sense": sense or "",
         "giveaway_words": giveaway,
         "usable": present is not None and not invented,
     }
@@ -50,5 +60,6 @@ def summarise(rows: list[dict]) -> dict:
         "reuses_per_sentence": sum(r["verified"] for r in rows) / n,
         "invented_rate": sum(bool(r["invented"]) for r in rows) / n,
         "giveaway_rate": sum(r["gives_away"] for r in rows) / n,
+        "wrong_sense_rate": sum(bool(r.get("wrong_sense")) for r in rows) / n,
         "mean_words": sum(r["words"] for r in rows) / n,
     }

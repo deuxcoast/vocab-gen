@@ -12,6 +12,14 @@ cd ~/deuxcoast/vocab-gen
 uv sync
 ```
 
+spaCy and its `en_core_web_sm` model are pinned dependencies, so `uv sync` installs both. If
+you also installed the CLI with `uv tool install`, **re-run it after any dependency change** —
+the tool venv is separate from the project venv:
+
+```bash
+uv tool install --editable --force ~/deuxcoast/vocab-gen
+```
+
 Put your key in `.env` (already created, gitignored, mode 600):
 
 ```
@@ -217,10 +225,23 @@ of `supplicants` is credited when the sentence writes `supplicant`) and recorded
 deck's own spelling, so history aggregates one word to one key instead of scattering across
 its forms.
 
-Candidates are also checked for **giving the answer away** — content words shared between the
-sentence and the word's own definition, which quietly turns a recall test into a freebie.
-Flagged rather than dropped, since short overlaps are often innocent. About 1 in 5 candidates
-trips this.
+Word matching uses spaCy lemmatization rather than suffix stripping, so `supplicant` matches a
+deck entry of `supplicants` and `adumbrating` matches `adumbrated`, while derivation does not
+collapse (`strait` never credits `straitjacket`). Part-of-speech tagging adds a check nothing
+could do before: **if the card teaches the verb sense of `countenance` and the sentence uses
+the noun, the card does not reinforce what was learned** — the candidate is flagged.
+
+Candidates are also checked for **giving the answer away** — a sentence that hands over the
+meaning turns a recall test into a freebie. Sharing a content word is not enough on its own:
+a shared word counts when it is **rare enough to be informative** (Zipf below 4.5), or when
+the sentence **reproduces at least half the definition's content words**, which is a
+paraphrase however common the parts are.
+
+The threshold came from the data rather than intuition. Across the flagged words in stored
+runs, coincidental overlaps sat at Zipf 5.7–6.4 (`against`, `over`, `need`) and genuine
+giveaways at 2.6–3.8 (`unyielding`, `bearers`, `treachery`). This matters beyond presentation:
+`giveaway_rate` is one of the metrics prompts are compared on, so false positives add noise to
+the measurement itself.
 
 ```bash
 vocab --stats          # coverage, plus the shakiest words in your deck
@@ -236,6 +257,40 @@ otherwise it would just trade one systematic bias for another.
 
 Note that reuse is recorded for every candidate shown, not just the one you keep, since the
 goal is variety in what you *see*.
+
+## Evaluating prompts
+
+The prompt is a bigger lever than the model — four models across three vendors landed within
+noise of each other, which suggests the ceiling is set by the instructions, not the weights.
+
+```bash
+uv run python scripts/eval.py --list-variants
+uv run python scripts/eval.py dashscope --variants baseline permissive-reuse terse
+```
+
+Variants live in `prompts.py` and are **composed from shared blocks**, not rewritten. An
+ablation differs from the baseline in exactly the thing it claims to test; hand-rewriting a
+whole prompt per variant is how a result gets attributed to the rule you changed on purpose
+rather than the three words you changed by accident.
+
+Every variant carries a stated **hypothesis**. If you cannot say in advance what it should do
+to which metric, you are not running an experiment — and with enough variants, something
+always wins by chance.
+
+Comparisons are **paired**: every arm sees the same golden words, so the per-word difference
+is averaged rather than each arm being averaged and subtracted. Word difficulty is the largest
+source of variance — some targets are simply easier to write around — and pairing cancels it,
+which is what lets 20 words resolve a difference at all.
+
+```
+  variant            metric            diff   95% ci     w/l  verdict
+  terse              judge           -0.800    0.272   0/3    REAL
+  terse              naturalness     -1.222    0.218   0/3    REAL
+  terse              reuses/sent     +0.444    0.576   2/0    noise
+```
+
+"noise" means the interval spans zero — not that the arms are equal, only that this many words
+cannot tell them apart.
 
 ## Eval harness
 

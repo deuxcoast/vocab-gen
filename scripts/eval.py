@@ -23,6 +23,11 @@ from vocab_gen.providers import PROVIDERS, available  # noqa: E402
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("models", nargs="*", help="provider or provider:model specs")
+    ap.add_argument(
+        "--variants", nargs="*", default=None,
+        help="prompt variants to compare (default: baseline only)",
+    )
+    ap.add_argument("--list-variants", action="store_true", help="show variants and exit")
     ap.add_argument("--cases", type=int, default=None, help="use only the first N cases")
     ap.add_argument("-n", "--candidates", type=int, default=3)
     ap.add_argument("--judge", default=DEFAULT_JUDGE)
@@ -33,9 +38,18 @@ def main() -> int:
 
     load_env()
 
+    if args.list_variants:
+        from vocab_gen.prompts import VARIANTS
+
+        for name, v in VARIANTS.items():
+            print(f"\n{name}")
+            print(f"  {v.hypothesis}")
+        return 0
+
     if args.report:
         rows = runner.load(args.report)
         print(report.render(rows))
+        print(report.render_paired(rows))
         print(report.examples(rows))
         return 0
 
@@ -51,6 +65,7 @@ def main() -> int:
     print(f"models: {', '.join(models)}", file=sys.stderr)
     run_id, rows = runner.run(
         models,
+        variants=args.variants,
         n_cases=args.cases,
         n_candidates=args.candidates,
         judge_model=None if args.no_judge else args.judge,
@@ -58,8 +73,10 @@ def main() -> int:
         on_event=event,
     )
     print(f"\nrun {run_id} · {len(rows)} candidates\n")
-    print(report.render([r.__dict__ for r in rows]))
-    print(report.examples([r.__dict__ for r in rows]))
+    dicts = [r.__dict__ for r in rows]
+    print(report.render(dicts))
+    print(report.render_paired(dicts))
+    print(report.examples(dicts))
     print(f"\nstored: evals/runs/{run_id}.jsonl")
     return 0
 
