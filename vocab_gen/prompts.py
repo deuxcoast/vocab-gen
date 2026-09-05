@@ -132,6 +132,8 @@ class PromptVariant:
     # ground, since the prompt tells it to vary them, which appears to lower the
     # reuse rate of the pool being ranked. Two calls each see a normal request.
     batches: int = 1
+    # How the preferred-word sample is biased: "fsrs", "lapses", or "uniform".
+    weighting: str = "fsrs"
 
     def system_text(self) -> str:
         return "\n\n".join(self.blocks)
@@ -197,6 +199,26 @@ VARIANTS: dict[str, PromptVariant] = {
         ),
         blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
         batches=2,
+    ),
+    "baseline-lapses": PromptVariant(
+        name="baseline-lapses",
+        hypothesis=(
+            "The shipped prompt, choosing preferred words by the hand-rolled "
+            "lapse score FSRS replaced. Predicts worse targeting — reused words "
+            "less likely to have been forgotten — with sentence quality "
+            "unchanged, since only which words are offered differs."
+        ),
+        blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
+        weighting="lapses",
+    ),
+    "baseline-uniform": PromptVariant(
+        name="baseline-uniform",
+        hypothesis=(
+            "The control: preferred words drawn with no weighting at all. If "
+            "FSRS does not beat this, the weighting is decoration."
+        ),
+        blocks=(ROLE, WRITING, REUSE_STRICT, DEFINITIONS),
+        weighting="uniform",
     ),
     "no-glosses": PromptVariant(
         name="no-glosses",

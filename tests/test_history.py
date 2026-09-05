@@ -155,3 +155,81 @@ def test_recent_kept_returns_the_newest(tmp_path):
     for i in range(6):
         a.record_kept(f"w{i}", f"s{i}", [])
     assert [k["target"] for k in a.recent_kept(2)] == ["w4", "w5"]
+
+
+# --- FSRS-weighted selection -------------------------------------------------
+
+
+def test_selection_favours_words_the_learner_is_likely_to_have_forgotten(tmp_path):
+    """Weighting now comes from a memory model rather than a hand-rolled score."""
+    import time
+
+    fresh = [
+        VocabWord(f"solid{i}", stability=400.0, decay=0.135, last_review=time.time())
+        for i in range(20)
+    ]
+    # One word last seen a full stability ago: recall is 90%, so 10% forgotten.
+    due = VocabWord(
+        "atavism", stability=10.0, decay=0.135, last_review=time.time() - 10 * 86400
+    )
+    deck = fresh + [due]
+    a = h(tmp_path)
+
+    picked = sum(
+        "atavism" in {w.term for w in a.plan(deck, n_prefer=3, rng=random.Random(s))[0]}
+        for s in range(200)
+    )
+    # Uniform sampling would pick it about 3/21 = 14% of the time.
+    assert picked > 60, f"forgotten word picked only {picked}/200 times"
+
+
+def test_the_three_weightings_choose_differently(tmp_path):
+    import time
+
+    now = time.time()
+    deck = [
+        # Freshly reviewed but heavily lapsed: the old score calls this shaky,
+        # FSRS knows it was just seen and is not.
+        VocabWord("recent", lapses=5, ivl=10, stability=200.0, decay=0.135, last_review=now),
+        # Never lapsed but long overdue: FSRS sees the risk, the old score cannot.
+        VocabWord("overdue", lapses=0, ivl=10, stability=5.0, decay=0.135,
+                  last_review=now - 60 * 86400),
+    ]
+    a = h(tmp_path)
+    assert deck[1].shakiness > deck[0].shakiness, "FSRS should rank the overdue word shakier"
+    assert deck[0].legacy_shakiness > deck[1].legacy_shakiness, "the old score ranks it backwards"
+
+
+def test_uniform_weighting_ignores_memory_entirely(tmp_path):
+    import time
+
+    deck = [
+        VocabWord("a", stability=5.0, decay=0.135, last_review=time.time() - 60 * 86400),
+        VocabWord("b", stability=400.0, decay=0.135, last_review=time.time()),
+    ]
+    a = h(tmp_path)
+    picks = [
+        a.plan(deck, n_prefer=1, rng=random.Random(s), weighting="uniform")[0][0].term
+        for s in range(60)
+    ]
+    assert len(set(picks)) == 2, "uniform must not favour either word"
+
+
+def test_fsrs_weighting_favours_the_overdue_word(tmp_path):
+    import time
+
+    deck = [
+        VocabWord("overdue", stability=5.0, decay=0.135, last_review=time.time() - 60 * 86400),
+        VocabWord("fresh", stability=400.0, decay=0.135, last_review=time.time()),
+    ]
+    a = h(tmp_path)
+    picks = [
+        a.plan(deck, n_prefer=1, rng=random.Random(s), weighting="fsrs")[0][0].term
+        for s in range(60)
+    ]
+    assert picks.count("overdue") > 55, f"only {picks.count('overdue')}/60"
+
+
+def test_an_unknown_weighting_falls_back_to_fsrs(tmp_path):
+    deck = [VocabWord("a"), VocabWord("b")]
+    assert h(tmp_path).plan(deck, n_prefer=1, weighting="nonsense")[0]

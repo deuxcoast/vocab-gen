@@ -222,10 +222,24 @@ and leaves the cached word list fully intact.
 Measured with `frigate` and nine other words seeded as heavily used: **9 of 12 reuses came
 from the rarely-used pool, 0 from the avoid list, and `frigate` appeared zero times.**
 
-Steering also uses what Anki knows about your recall. Each word carries a *shakiness* score
-built from lapses and current interval, and the preferred pool is sampled weighted by it — so
-a word you keep failing is likelier to resurface than one you have never missed. Measured over
-24 sentences: reused words averaged **3.72 shakiness against a deck baseline of 2.45**.
+Steering uses what Anki already knows about your recall. Anki schedules with FSRS, and stores
+each card's memory state — stability, difficulty, and the shape of its own forgetting curve.
+The tool reads it and computes **retrievability**: the probability you would recall that word
+right now.
+
+    R(t) = (1 + F · t/S) ^ -decay,   F = 0.9 ^ (-1/decay) - 1
+
+The preferred pool is sampled weighted by `1 - R`, the probability you have *forgotten* it, so
+words on the edge of slipping resurface first. This replaces a hand-rolled score built from
+lapse counts: a model fitted to your own review history beats any proxy invented for it.
+
+`vocab --stats` lists the words most likely to have gone. 694 of 815 carry FSRS state; the
+rest fall back to lapses and interval, on the same 0-1 scale so both kinds can be weighed
+together.
+
+The eval scores **targeting** — the mean forgetting probability of the words a sentence brought
+back. Without it, changing *which* words get chosen would be invisible to every other metric,
+since they only see what happened to the sentence.
 
 When a candidate is generated, its reuse claims are checked **inflection-aware** (a deck entry
 of `supplicants` is credited when the sentence writes `supplicant`) and recorded under the

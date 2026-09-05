@@ -48,6 +48,7 @@ class Row:
     claimed: int
     verified: int
     unreported: int
+    targeting: float | None
     reused: list
     no_invented_reuse: bool
     invented: list
@@ -84,9 +85,18 @@ def run(
 ) -> tuple[str, list[Row]]:
     vocab = extract_vocab(deck=deck)
     words = [w.term for w in vocab]
+    # Forgetting probability per word, so reuse can be scored on targeting.
+    memory = {w.term.lower(): w.shakiness for w in vocab}
 
-    # Frozen once: every model must see the same prompt or nothing is comparable.
-    prefer, avoid = History.load().plan(vocab, rng=random.Random(seed))
+    # Frozen per weighting, not per run. Arms that differ in how words are
+    # chosen must differ in their preferred list — that list *is* the treatment
+    # — but the seed is shared, so the only difference is the weighting and not
+    # the draw. Arms with the same weighting still see byte-identical prompts.
+    history = History.load()
+    plans = {
+        w: history.plan(vocab, rng=random.Random(seed), weighting=w)
+        for w in History.WEIGHTINGS
+    }
 
     cases = subset(n_cases)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + (f"-{label}" if label else "")
@@ -101,6 +111,7 @@ def run(
             factor = max(oversample, getattr(variant, "oversample", 1))
             rounds = getattr(variant, "batches", 1)
             arm = f"{variant_name}+os{factor}" if factor > 1 and factor != variant.oversample else variant_name
+            prefer, avoid = plans[getattr(variant, "weighting", "fsrs")]
             for case in cases:
                 started = time.perf_counter()
                 try:
@@ -137,7 +148,7 @@ def run(
                 for i, cand in enumerate(shown):
                     g = grade_candidate(
                             cand, case.word, result.definition, words,
-                            getattr(result, 'part_of_speech', ''),
+                            getattr(result, 'part_of_speech', ''), memory,
                         )
                     rows.append(
                         Row(
@@ -151,7 +162,7 @@ def run(
                             cost=(cost / max(len(shown), 1)) if cost is not None else None,
                             **{k: g[k] for k in (
                                 "sentence", "words", "has_target", "claimed", "verified",
-                                "unreported", "reused", "no_invented_reuse", "invented", "gives_away",
+                                "unreported", "targeting", "reused", "no_invented_reuse", "invented", "gives_away",
                                 "giveaway_words", "wrong_sense", "usable")},
                         )
                     )
@@ -198,7 +209,7 @@ def _error_row(run_id: str, model: str, variant: str, case: Case, error: str) ->
     return Row(
         run_id=run_id, model=model, variant=variant, word=case.word, pos=case.pos,
         register=case.register, index=0, sentence="", words=0, has_target=False,
-        claimed=0, verified=0, unreported=0, reused=[], no_invented_reuse=True, invented=[],
+        claimed=0, verified=0, unreported=0, targeting=None, reused=[], no_invented_reuse=True, invented=[],
         gives_away=False, giveaway_words=[], wrong_sense="", usable=False, latency=0.0,
         input_tokens=0, output_tokens=0, cache_read=0, cost=None, error=error,
     )
