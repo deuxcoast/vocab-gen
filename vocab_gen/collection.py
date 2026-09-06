@@ -128,6 +128,10 @@ class VocabWord:
     difficulty: float = 0.0  # 1-10; how hard this card is for this learner
     decay: float = 0.0  # per-card shape of the forgetting curve
     last_review: float = 0.0  # unix seconds
+    # When the note was made. Anki's note id *is* its creation time in ms, and
+    # it is the only record of when a word entered the deck — which is how the
+    # learner's own difficulty frontier can be seen to move.
+    created: float = 0.0  # unix seconds
 
     @property
     def has_memory_state(self) -> bool:
@@ -270,6 +274,7 @@ def extract_vocab(
 
     seen: dict[str, VocabWord] = {}
     for _nid, flds, lapses, ivl, reps, data in rows:
+        created = (_nid or 0) / 1000.0
         stability, difficulty, decay, last_review = _memory_state(data)
         fields = flds.split(FIELD_SEP)
         gloss = html_to_text(fields[1]) if len(fields) > 1 else ""
@@ -279,7 +284,7 @@ def extract_vocab(
             if prior is None:
                 seen[key] = VocabWord(
                     term, gloss, lapses or 0, ivl or 0, reps or 0,
-                    stability, difficulty, decay, last_review,
+                    stability, difficulty, decay, last_review, created,
                 )
             else:
                 # The same word can sit on several notes; keep the shakiest
@@ -288,7 +293,7 @@ def extract_vocab(
                 # reading of it, since that is the one worth reinforcing.
                 keep_new = prior.shakiness < VocabWord(
                     term, gloss, lapses or 0, ivl or 0, reps or 0,
-                    stability, difficulty, decay, last_review,
+                    stability, difficulty, decay, last_review, created,
                 ).shakiness
                 seen[key] = VocabWord(
                     prior.term,
@@ -300,6 +305,7 @@ def extract_vocab(
                     difficulty if keep_new else prior.difficulty,
                     decay if keep_new else prior.decay,
                     last_review if keep_new else prior.last_review,
+                    min(prior.created, created) if prior.created else created,
                 )
     words = sorted(seen.values(), key=lambda w: w.term.lower())
     if exclude_offensive:

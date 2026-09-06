@@ -25,4 +25,8 @@ packages = ["vocab_gen"]
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+    "scikit-learn>=1.7.2",
+    "sentence-transformers>=6.0.1",
+]
