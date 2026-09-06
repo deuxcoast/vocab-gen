@@ -64,36 +64,39 @@ Why these rather than an academic list. Measured against the real deck:
 The academic lists are built for students entering university and are pitched far
 below this deck — their first suggestions are `typically`, `stairway`, `forehead`.
 
-## `aoa.csv.gz` and `concreteness.csv.gz`
+## Norms that were tried and are deliberately *not* vendored
 
-**Not used at runtime today.** Retained because they are what established the
-design, and because the AoA file is genuinely hard to find again.
+Age-of-acquisition and concreteness norms were fetched, measured, and dropped.
+Recorded here because they are what established the design, and because the AoA
+file is hard to find again:
 
 - **AoA:** Kuperman, V., Stadthagen-Gonzalez, H., & Brysbaert, M. (2012).
   *Age-of-acquisition ratings for 30,000 English words.* Behavior Research
-  Methods, 44(4), 978–990. 28,053 lemmas, the human `Kuperman_et_al_2012_AoA`
-  column. The `crr.ugent.be` path every reference gives is dead and Springer's
-  supplement 403s; retrieved 2026-09-05 from the OSF repository of a 2025 paper
-  extending the norms (https://osf.io/ch48r/), which carries the original column.
+  Methods, 44(4), 978-990. The `crr.ugent.be` path every reference gives is dead
+  and Springer's supplement 403s. It survives in the OSF repository of a 2025
+  paper extending the norms, https://osf.io/ch48r/, in
+  `AI Generated Print AoA Estimates for Kuperman et al. (2012).xlsx`, whose
+  `Kuperman_et_al_2012_AoA` column is the original human data (28,053 lemmas).
 - **Concreteness:** Brysbaert, M., Warriner, A. B., & Kuperman, V. (2014).
   *Concreteness ratings for 40 thousand generally known English word lemmas.*
-  Behavior Research Methods, 46(3), 904–911. 39,954 lemmas, 1 = abstract,
-  5 = concrete. Retrieved 2026-09-05 from the Springer supplement.
+  Behavior Research Methods, 46(3), 904-911. 39,954 lemmas, 1 = abstract,
+  5 = concrete, from the Springer supplement
+  `13428_2013_403_MOESM1_ESM.xlsx` under DOI 10.3758/s13428-013-0403-5.
 
 Both discriminate the target category well and **both fail on coverage exactly
-where it matters** — their missingness is correlated with rarity:
+where it matters** - their missingness is correlated with rarity:
 
 | Zipf band | concreteness | AoA |
 |---|---|---|
-| 0–2 | 37% | 14% |
-| 2–3 | 65% | 63% |
-| 3–4 | 93% | 80% |
-| 4–8 | 98% | 82% |
+| 0-2 | 37% | 14% |
+| 2-3 | 65% | 63% |
+| 3-4 | 93% | 80% |
+| 4-8 | 98% | 82% |
 
-Filtering on either would therefore bias candidates toward commoner words, which
-is backwards. An embedding model predicting concreteness from these as training
-labels reaches held-out Spearman 0.754 on rare words and gives full coverage —
+Filtering on either would bias candidates toward commoner words, which is
+backwards. An embedding model predicting concreteness from them as training
+labels reaches held-out Spearman 0.754 on rare words and gives full coverage -
 but ranked inside the deck's difficulty band it returns `abidingness`,
 `comprehensibleness`, `disadvantageousness`, because nothing in a distributional
 score knows which forms people actually write. The curated lists exclude those by
-construction, which is why they are what ships.
+construction, which is why they are what ships and these are not.
