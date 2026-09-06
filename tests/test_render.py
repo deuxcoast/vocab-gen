@@ -170,14 +170,30 @@ def test_target_word_itself_is_not_a_giveaway():
 
 
 def test_real_stopwords_are_ignored():
-    """spaCy's stopword list replaces a hand-written one; glue words never count."""
+    """spaCy's stopword list replaces a hand-written one; glue words never count.
+
+    The definition carries content words, so the check does run — what it must
+    not do is flag the glue the two happen to share.
+    """
+    assert (
+        gives_away_answer(
+            "It was the one that they had, in a way.",
+            ["The one that they had, in some impractical fashion."],
+            "quixotic",
+        )
+        == []
+    )
+
+
+def test_a_definition_of_pure_glue_is_unassessable():
+    """No content words means nothing to compare, however much text there is."""
     assert (
         gives_away_answer(
             "It was the one that they had, in a way.",
             ["The one that they had, in some way."],
             "quixotic",
         )
-        == []
+        is None
     )
 
 
@@ -361,8 +377,17 @@ def test_the_target_itself_never_counts():
     ) == []
 
 
-def test_an_empty_definition_flags_nothing():
-    assert gives_away_answer("Anything at all.", [], "obdurate") == []
+def test_an_unusable_definition_is_not_assessable_rather_than_clean():
+    """This test previously asserted [] — the bug, encoded as correct behaviour.
+
+    An empty definition means the check could not run. Recording that as "no
+    giveaway found" silently counts an unmeasurable card as evidence of no leak,
+    in a metric that prompts are compared on.
+    """
+    assert gives_away_answer("Anything at all.", [], "obdurate") is None
+    assert gives_away_answer("Anything at all.", [", ", ". "], "obdurate") is None
+    # A definition with real content still returns a list, empty when clean.
+    assert gives_away_answer("A quiet morning.", ["Unyielding."], "obdurate") == []
 
 
 # --- reuse detection, not reuse self-report ---------------------------------

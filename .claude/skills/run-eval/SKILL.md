@@ -28,9 +28,14 @@ difference is the bias and not the draw, and say in the commit that the
 identical-prompt invariant was relaxed on purpose.
 
 **Add a control when testing whether a mechanism works at all.** FSRS weighting
-was compared against the score it replaced *and* against uniform sampling. It
-beat uniform, which is the only reason we know the weighting does anything. The
-old score, it turned out, was no better than not weighting at all.
+was compared against the score it replaced *and* against uniform sampling. The
+control is what made the result readable — and on a complete rerun it is the
+control that won. FSRS versus uniform on `targeting` came out at -0.001, CI
+±0.011: noise. An earlier run had reported -0.009, CI ±0.007, but that run lost
+four cases on the uniform arm and was reading a biased sample.
+
+Keep the control for the reason it earned its place, not for the conclusion it
+first produced.
 
 **Never predict the outcome from stored runs.** This failed twice, in two
 different ways. An intervention that changes how the data is produced cannot be
@@ -48,6 +53,20 @@ content filter. Both tables looked fine.
 
 If an arm is short, fix the cause and re-run the whole comparison. Do not patch
 one arm and compare it against the others: they were judged without it.
+
+**Check *which* arm is short, and where in the set.** Arms run in blocks — model,
+then variant, then case — so anything that exhausts with use lands entirely on
+whichever arm is scheduled last. The weighting comparison lost exactly four cases,
+all on the last arm, all in the last four words of the golden set: a quota
+boundary, not a property of the arm. It read as evidence about uniform sampling
+and was not. Losses clustered at the end of the run are a scheduling artefact
+until proven otherwise, and the fix is to interleave arms per case rather than to
+re-run and hope.
+
+That run also shows the second-order cost. The judge scores candidates for a word
+side by side, so an arm missing from four words changes the pool the *other* arms
+were judged in for those words — the damage is not confined to the rows that are
+missing.
 
 ## When reporting
 
@@ -93,8 +112,20 @@ are offered*; every existing metric only saw what happened to the sentence. The
 - `reuse` — fraction of sentences reusing at least one deck word
 - `inv` — claimed a deck word that does not exist
 - `targeting` — mean probability the learner had forgotten the reused words
+- `prefer hits` — share of reuses that came from the offered list rather than the
+  rest of the deck; separates "the list worked" from "the model found a word on
+  its own"
 - `$/100 acc` — dollars per *accepted* card; a cheap model needing more attempts
   is not cheap
 
 Paired rows compare per word, which cancels word difficulty — the dominant source
 of variance, and the reason 40 words can resolve anything at all.
+
+`targeting` and `prefer hits` are both null when a sentence reused nothing, so
+they are computed over fewer candidates than `n` — and if the arms reuse at
+different rates, that subset is not a random one. Check the reuse rates before
+reading either as a clean paired comparison.
+
+The `paired` table header says "positive favours the variant", which is true for
+judge and reuse and backwards for `giveaway`, where positive means the variant
+leaks more.

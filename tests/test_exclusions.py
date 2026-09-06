@@ -68,3 +68,11 @@ def test_exclusion_is_justified_by_card_quality_not_by_classifiers():
     """
     assert is_excluded("jigaboo")
     assert not is_excluded("pogrom"), "not a slur; the rule is not about discomfort"
+
+
+def test_a_slur_the_deck_itself_labels_offensive_is_held_back():
+    """`coolie` surfaced as a top relatedness neighbour for `palanquin` while the
+    embedding index was being validated. It is a card worth keeping and a word
+    not worth volunteering, which is exactly what this list is for."""
+    assert is_excluded("coolie")
+    assert is_excluded("  Coolie ")  # same case/whitespace rule as the rest

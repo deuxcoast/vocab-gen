@@ -22,6 +22,8 @@ import threading
 import time
 from pathlib import Path
 
+from .morphology import same_term
+
 VERSION = 1
 KEEP_LIMIT = 40  # how many chosen sentences to retain
 _LOCK = threading.Lock()
@@ -81,6 +83,7 @@ class History:
         n_avoid: int = 12,
         rng: random.Random | None = None,
         weighting: str = "fsrs",
+        target: str | None = None,
     ):
         """Return (prefer, avoid).
 
@@ -89,6 +92,12 @@ class History:
         control — if FSRS and uniform behave alike, the weighting is doing
         nothing.
 
+        `target` is the word being taught, and is held out of both lists. A deck
+        can contain the word you are making a new card for — the golden set alone
+        has four — and offering it back with the learner's own definition attached
+        hands over the answer. Held out inflection-aware, so a deck entry of
+        "flagons" is excluded when the target is "flagon".
+
         `prefer` is drawn from the least-surfaced words, then sampled *weighted
         by forgetting probability* — so a word you keep lapsing on is likelier to come up
         than one you have never missed. Sampling rather than ranking still
@@ -96,7 +105,11 @@ class History:
         slice would trade one systematic bias for another.
         """
         rng = rng or random.Random()
-        by_term = {w.term: w for w in vocab}
+        by_term = {
+            w.term: w
+            for w in vocab
+            if not (target and same_term(w.term, target))
+        }
         lowered = {t.lower() for t in by_term}
         seen = {k: v for k, v in self.words.items() if k in lowered}
 

@@ -121,8 +121,16 @@ def _informative(word: str) -> bool:
     return zipf_frequency(word, "en") < INFORMATIVE_ZIPF
 
 
-def gives_away_answer(sentence: str, definition: list[str], target: str) -> list[str]:
+def gives_away_answer(
+    sentence: str, definition: list[str], target: str
+) -> list[str] | None:
     """Words shared with the definition that actually leak the meaning.
+
+    Returns None when the definition carries no content words to compare
+    against — the check could not be performed. That is not the same as a clean
+    sentence, and conflating the two silently marks a card safe: giveaway_rate
+    is one of the metrics prompts are compared on, so an unusable definition
+    would quietly count as evidence of no leak.
 
     Sharing a content word is not enough on its own: "need" or "cultural" turn up
     in a definition and a sentence by coincidence, and flagging those buries the
@@ -135,7 +143,7 @@ def gives_away_answer(sentence: str, definition: list[str], target: str) -> list
     target_keys = set().union(*phrase_keys(target)) if phrase_keys(target) else set()
     defined = content_words(" ".join(definition))
     if not defined:
-        return []
+        return None
 
     shared: list[tuple[str, str]] = []
     for lemma_, surface in content_words(sentence).items():

@@ -230,16 +230,46 @@ right now.
     R(t) = (1 + F · t/S) ^ -decay,   F = 0.9 ^ (-1/decay) - 1
 
 The preferred pool is sampled weighted by `1 - R`, the probability you have *forgotten* it, so
-words on the edge of slipping resurface first. This replaces a hand-rolled score built from
-lapse counts: a model fitted to your own review history beats any proxy invented for it.
+words on the edge of slipping resurface first. This replaced a hand-rolled score built from
+lapse counts.
 
-`vocab --stats` lists the words most likely to have gone. 694 of 815 carry FSRS state; the
-rest fall back to lapses and interval, on the same 0-1 scale so both kinds can be weighed
-together.
+**What that is measured to do, as of 2026-09-05, is less than this section used to claim.**
+The weighting does change what the model is shown: the offered pool averages 0.065 forgetting
+probability against 0.052 for unweighted sampling, a 25% shift. What it does not do is survive
+into the sentences. Paired against uniform sampling over the full 40-word set, `targeting`
+comes out at **-0.001, 95% CI ±0.011 — noise**. The model chooses among the offered words by
+what it can write around, and a shift that small does not outlast that choice.
+
+An earlier run reported this as a real effect (-0.009, CI ±0.007). That run lost four cases on
+the uniform arm to a rate limit and was reading a biased sample; on a complete run the estimate
+shrank ninefold and the interval crossed zero. The claim that FSRS beats uniform was wrong, not
+merely overstated.
+
+Two structural reasons the effect is so small, both worth knowing before trying to fix it: the
+deck's forgetting probabilities are compressed — median 0.050, 94.6% below 0.10 — and the 146
+cards Anki has not scheduled all sit at *exactly* 0.05, so for 17% of the deck the weighting is
+uniform by construction.
+
+The same run found uniform sampling ahead on judge (+0.197, CI ±0.167) and naturalness (+0.375,
+CI ±0.267), with FSRS ahead on reuse (61% against 43%) and giveaway (2% against 7%). Read that
+cautiously: the arms differ in more than forgetting probability. FSRS selection also offers
+rarer, longer words (Zipf 2.01 against 2.25), and rare words are both more distinctive to reach
+for and harder to place naturally. Rarity and forgettability are causally linked, so this is
+not a flaw in the weighting — but this design cannot separate the two, and the judge effect sits
+right at the 40-word resolution floor.
+
+`vocab --stats` lists the words most likely to have gone. About 83% of the deck carries FSRS
+state (694 of 841 at the last count, and the deck grows); the rest fall back to lapses and
+interval, on the same 0-1 scale so both kinds can be weighed together. Those fallback cards are
+the ones that tie at 0.05 above.
 
 The eval scores **targeting** — the mean forgetting probability of the words a sentence brought
 back. Without it, changing *which* words get chosen would be invisible to every other metric,
-since they only see what happened to the sentence.
+since they only see what happened to the sentence. It is also scored as **`prefer hits`**: the
+share of reuses that came from the offered list rather than from the rest of the deck, which
+separates "the list worked" from "the model found a word on its own". Note that both are
+conditional on the sentence reusing at all, so they are computed over fewer candidates than the
+run's `n` suggests, and the arms being compared may not reuse at equal rates.
 
 When a candidate is generated, its reuse claims are checked **inflection-aware** (a deck entry
 of `supplicants` is credited when the sentence writes `supplicant`) and recorded under the

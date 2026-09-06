@@ -86,7 +86,7 @@ def main() -> int:
     load_env()
     vocab = extract_vocab()
     words = [w.term for w in vocab]
-    prefer, avoid = History.load().plan(vocab)
+    prefer, avoid = History.load().plan(vocab, target=args.word)
     print(f"deck: {len(words)} words · target: {args.word}\n")
 
     specs = args.providers or [p for p in PROVIDERS if available(p)]

@@ -573,3 +573,113 @@ def test_targeting_averages_across_several_reuses():
         "obdurate", ["Unyielding."], ["scurrilous", "strait"], memory=memory,
     )
     assert g["targeting"] == pytest.approx(0.15)
+
+
+# --- an unusable definition must not read as a clean card --------------------
+
+
+def test_junk_definition_bullets_are_dropped_at_parse_time():
+    from vocab_gen.generate import Generation
+
+    g = Generation(
+        definition=[", ", ": Dominance of one group over others.", ". "],
+        part_of_speech="noun",
+        candidates=[],
+    )
+    assert g.definition == ["Dominance of one group over others."]
+
+
+def test_a_wholly_degenerate_definition_becomes_empty_not_plausible():
+    from vocab_gen.generate import Generation
+
+    assert Generation(
+        definition=[", ", ", ", ", "], part_of_speech="noun", candidates=[]
+    ).definition == []
+
+
+def test_grade_reports_giveaway_as_unassessable_when_the_definition_is_empty():
+    from vocab_gen.evals.graders import grade_candidate, summarise
+
+    class C:
+        sentence = "The magistrate remained unmoved by the appeal."
+        surface_form = "obdurate"
+        reused = []
+
+    g = grade_candidate(C(), "obdurate", [], ["zephyr"])
+    assert g["gives_away"] is None
+    assert g["giveaway_words"] == []
+
+    # ...and the rate is computed over assessable rows only, with the rest counted.
+    rows = [
+        {"gives_away": None, "usable": True, "has_target": True, "verified": 0,
+         "invented": [], "words": 8, "targeting": None, "wrong_sense": ""},
+        {"gives_away": True, "usable": True, "has_target": True, "verified": 0,
+         "invented": [], "words": 8, "targeting": None, "wrong_sense": ""},
+    ]
+    s = summarise(rows)
+    assert s["giveaway_rate"] == 1.0  # 1 of 1 assessable, not 1 of 2
+    assert s["giveaway_unassessable"] == 1
+
+
+# --- did the offered list do the work, or did the model reach past it? -------
+
+
+class _Cand:
+    def __init__(self, sentence, surface, reused):
+        self.sentence, self.surface_form, self.reused = sentence, surface, reused
+
+
+def test_reuse_from_the_offered_list_is_separated_from_reuse_elsewhere():
+    """Every other reuse metric counts any deck word, so a selection strategy
+    could look effective while the model reached past the list entirely."""
+    from vocab_gen.evals.graders import grade_candidate
+
+    deck = ["zephyr", "frigate"]
+    c = _Cand("A zephyr crossed the obdurate deck.", "obdurate", ["zephyr"])
+
+    offered = grade_candidate(c, "obdurate", ["Unyielding."], deck, prefer=["zephyr"])
+    assert offered["verified"] == 1 and offered["prefer_hits"] == 1
+    assert offered["prefer_hit_rate"] == 1.0
+
+    # Same sentence, same reuse — but the word was never offered.
+    elsewhere = grade_candidate(c, "obdurate", ["Unyielding."], deck, prefer=["frigate"])
+    assert elsewhere["verified"] == 1 and elsewhere["prefer_hits"] == 0
+    assert elsewhere["prefer_hit_rate"] == 0.0
+
+
+def test_the_rate_is_none_rather_than_zero_when_there_is_nothing_to_hit():
+    """A sentence that reuses nothing, or a run with steering off, must not read
+    as a hit rate of zero — that would be a real miss averaged in."""
+    from vocab_gen.evals.graders import grade_candidate
+
+    no_reuse = grade_candidate(
+        _Cand("The magistrate was obdurate.", "obdurate", []),
+        "obdurate", ["Unyielding."], ["zephyr"], prefer=["zephyr"],
+    )
+    assert no_reuse["verified"] == 0 and no_reuse["prefer_hit_rate"] is None
+
+    no_steering = grade_candidate(
+        _Cand("A zephyr crossed the obdurate deck.", "obdurate", ["zephyr"]),
+        "obdurate", ["Unyielding."], ["zephyr"], prefer=[],
+    )
+    assert no_steering["verified"] == 1 and no_steering["prefer_hit_rate"] is None
+
+
+def test_summarise_averages_only_the_rows_that_have_a_rate():
+    from vocab_gen.evals.graders import summarise
+
+    base = dict(usable=True, has_target=True, invented=[], words=8,
+                targeting=None, wrong_sense="", gives_away=False)
+    rows = [
+        {**base, "verified": 1, "prefer_hit_rate": 1.0},
+        {**base, "verified": 1, "prefer_hit_rate": 0.0},
+        {**base, "verified": 0, "prefer_hit_rate": None},  # excluded, not a zero
+    ]
+    assert summarise(rows)["prefer_hit_rate"] == 0.5
+
+
+def test_a_run_stored_before_the_metric_existed_still_renders():
+    from vocab_gen.evals.report import by_model
+
+    stats = by_model([row(model="m", error="")])  # no prefer_hit_rate key at all
+    assert stats["m"]["prefer_hit_rate"] is None

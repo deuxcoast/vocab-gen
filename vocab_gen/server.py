@@ -381,11 +381,14 @@ $('#f').onsubmit = async e => {
       throw new Error(data.error || 'request failed');
     }
     $('#status').textContent = '';
+    // render() clears #out, so the alert has to be prepended after it, not
+    // before: showing the warning first meant it was wiped in the same tick and
+    // a fallback looked exactly like a normal result on a different model.
+    render(data);
     if (data.fell_back_from) {
       const f = data.fell_back_from;
       showAlert('warn', `${f.provider} — ${KIND[f.kind] || f.kind}; used ${data.model} instead`, f.message);
     }
-    render(data);
   } catch (err) {
     $('#status').textContent = '';
     showAlert('error', lastErrorTitle || 'Request failed', String(err.message || err));
@@ -494,7 +497,7 @@ def _handler(deck, profile, model=None, effort=None, oversample=1):
                 from .generate import generate
 
                 history = History.load()
-                prefer, avoid = history.plan(vocab)
+                prefer, avoid = history.plan(vocab, target=word)
                 outcome = generate(
                     word,
                     words,

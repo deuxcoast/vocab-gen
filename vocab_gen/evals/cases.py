@@ -1,10 +1,22 @@
 """The golden set.
 
-Words deliberately absent from the deck, so a run reproduces the real
-situation: a new word arriving with 795 known ones behind it. Chosen to spread
-across part of speech and across the concrete/abstract axis, because that axis
-is where the model's word-selection bias showed up — concrete nouns are easy to
-build a scene around and abstract ones fight you.
+Words chosen to sit outside the deck, so a run reproduces the real situation: a
+new word arriving with the rest of the deck behind it. Spread across part of
+speech and across the concrete/abstract axis, because that axis is where the
+model's word-selection bias showed up — concrete nouns are easy to build a scene
+around and abstract ones fight you.
+
+Four of them are not in fact outside the deck, which was found while building
+the embedding index rather than by reading this list: `verisimilitude` is in it
+literally, and `descry`, `flagon` and `prevaricate` are in it by inflection, as
+`descried`, `flagons` and `prevaricating`. That is a flaw in the set, and the
+tempting fix — swapping those four out — is the wrong one, because changing the
+list invalidates comparison against every earlier run. It is left standing and
+handled instead: `History.plan` holds the target out of its own preferred list,
+so the model is never offered the word it is being asked to teach, and
+`detect_reuse` already excluded the target from reuse counts. What remains is
+that for those four the deck is effectively one word smaller than for the other
+thirty-six, which is small enough to live with and too small to see.
 
 Keep this list stable. Changing it invalidates comparison against earlier runs.
 """
